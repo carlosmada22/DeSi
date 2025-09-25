@@ -1,6 +1,6 @@
 # DeSi
 
-DeSi is a RAG-focused chatbot that provides intelligent assistance for openBIS and Data Store documentation. It sources information from two distinct knowledge bases: ReadTheDocs (openBIS documentation) and Wiki.js (Data Store wiki), using a vector database for efficient retrieval.
+DeSi, DataStore Helper is a RAG-focused chatbot that provides intelligent assistance for openBIS and Data Store documentation. It sources information from two distinct knowledge bases: ReadTheDocs (openBIS documentation) and Wiki.js (Data Store wiki), using a vector database for efficient retrieval.
 
 ## Features
 
