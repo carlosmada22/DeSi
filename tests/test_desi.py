@@ -15,7 +15,7 @@ from pathlib import Path
 # Add the src directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from desi.processor.processor import MultiSourceRAGProcessor
+from desi.processor.unified_processor import UnifiedProcessor
 from desi.query.query import DesiRAGQueryEngine
 from desi.scraper.readthedocs_scraper import ReadTheDocsScraper
 from desi.scraper.wikijs_scraper import WikiJSScraper
@@ -110,7 +110,7 @@ def test_processor():
                 )
 
             # Create processor
-            processor = MultiSourceRAGProcessor(
+            processor = UnifiedProcessor(
                 input_dir=str(input_dir),
                 output_dir=str(output_dir),
                 min_chunk_size=50,
