@@ -38,6 +38,7 @@ dependencies = [
     "flask-cors",
     "chromadb",
     "selenium",
+    "webdriver-manager",
 ]
 
 [project.urls]
