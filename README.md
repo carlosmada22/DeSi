@@ -1,36 +1,55 @@
-# DeSi
+# DeSi: DataStore Helper
+
+[![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub issues](https://img.shields.io/github/issues/carlosmada22/DeSi)](https://github.com/carlosmada22/DeSi/issues)
+[![GitHub stars](https://img.shields.io/github/stars/carlosmada22/DeSi)](https://github.com/carlosmada22/DeSi/stargazers)
 
 DeSi: DataStore Helper, is a RAG-focused chatbot that provides intelligent assistance for openBIS and Data Store documentation. It sources information from two distinct knowledge bases: ReadTheDocs (openBIS documentation) and Wiki.js (Data Store wiki), using a vector database for efficient retrieval.
 
+## Table of Contents
+
+- [DeSi: DataStore Helper](#desi-datastore-helper)
+  - [Table of Contents](#table-of-contents)
+  - [Features](#features)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+  - [Quick Start](#quick-start)
+  - [Configuration](#configuration)
+    - [Wiki.js URL](#wikijs-url)
+    - [Other Settings](#other-settings)
+  - [Usage](#usage)
+    - [Command Line Interface](#command-line-interface)
+    - [Web Interface](#web-interface)
+  - [Architecture](#architecture)
+  - [Example Queries](#example-queries)
+  - [Directory Structure](#directory-structure)
+  - [Development](#development)
+    - [Adding New Scrapers](#adding-new-scrapers)
+    - [Customizing Processing](#customizing-processing)
+    - [Extending the Query Engine](#extending-the-query-engine)
+  - [Troubleshooting](#troubleshooting)
+    - [Common Issues](#common-issues)
+    - [Logging](#logging)
+    - [Database Statistics](#database-statistics)
+  - [Contributing](#contributing)
+  - [License](#license)
+
 ## Features
 
-- **Multi-Source RAG**: Retrieves information from both openBIS ReadTheDocs and Wiki.js sources
-- **Vector Database**: Uses ChromaDB for efficient similarity search and retrieval
-- **Source Prioritization**: Prioritizes Data Store wiki content when relevant
-- **Conversation Memory**: Maintains context across multiple interactions
-- **Web Interface**: Browser-based chat interface for easy interaction
-- **CLI Interface**: Command-line interface for direct queries
-- **Modular Architecture**: Separate components for scraping, processing, and querying
-
-## Architecture
-
-DeSi consists of several key components:
-
-1. **Scrapers**: Extract content from ReadTheDocs and Wiki.js sites
-2. **Processor**: Chunks content and generates embeddings using Ollama
-3. **Vector Database**: ChromaDB for storing and retrieving embeddings
-4. **Query Engine**: RAG pipeline with source prioritization
-5. **Conversation Engine**: Memory-enabled chat interface
-6. **Web Interface**: Flask-based web application
+- **Multi-Source RAG**: Retrieves information from both openBIS ReadTheDocs and Wiki.js sources.
+- **Vector Database**: Uses ChromaDB for efficient similarity search and retrieval.
+- **Source Prioritization**: Prioritizes Data Store wiki content when relevant.
+- **Conversation Memory**: Maintains context across multiple interactions.
+- **Web & CLI Interfaces**: Interact via a browser-based chat or directly from the command line.
+- **Modular Architecture**: Separate components for scraping, processing, and querying.
 
 ## Prerequisites
 
 - Python 3.8+
-- Ollama with `qwen3` and `nomic-embed-text` models
-- ChromaDB
+- Ollama with `qwen3` and `nomic-embed-text` models installed.
 
-### Installing Ollama Models
-
+To install the required Ollama models, run:
 ```bash
 ollama pull qwen3
 ollama pull nomic-embed-text
@@ -38,49 +57,46 @@ ollama pull nomic-embed-text
 
 ## Installation
 
-1. Clone or copy the DeSi directory
-2. Install dependencies:
+It is highly recommended to use a virtual environment to manage project dependencies.
 
-```bash
-cd DeSi
-pip install -r requirements.txt
-```
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/carlosmada22/DeSi.git
+    cd DeSi
+    ```
+
+2.  **Create and activate a virtual environment:**
+    ```bash
+    # For Unix/macOS
+    python3 -m venv .venv
+    source .venv/bin/activate
+
+    # For Windows
+    python -m venv .venv
+    .venv\Scripts\activate
+    ```
+
+3.  **Install the project and its dependencies:**
+    This single command installs DeSi in "editable" mode along with all the tools needed for development (like `pytest`, `ruff`, etc.). It reads all dependencies directly from the `pyproject.toml` file.
+    ```bash
+    pip install -e ".[dev]"
+    ```
+
+4.  **Prepare the environment:**
+    After installation, run the initialization script to check for necessary services (like Ollama), download AI models, and create the required data directories.
+    ```bash
+    python init.py
+    ```
 
 ## Quick Start
 
-### Option 1: Automatic Pipeline (Recommended)
-
-Run the complete pipeline automatically:
+For the fastest start, run the complete, automated pipeline. This will scrape the data, build the database, and launch the query interface.
 
 ```bash
 python main.py
 ```
 
-This will:
-1. Check for existing vector database
-2. If not found, run the complete pipeline (scrape, process, ingest)
-3. Start the query interface
-
-### Option 2: Manual Pipeline
-
-Run each step manually for more control:
-
-```bash
-# 1. Scrape ReadTheDocs (openBIS)
-python main.py scrape readthedocs --url https://openbis.readthedocs.io/en/latest/ --output data/raw/openbis
-
-# 2. Scrape Wiki.js (configure URL first)
-python main.py scrape wikijs --url https://your-wikijs-site.com --output data/raw/wikijs
-
-# 3. Process all scraped content
-python main.py process --input data/raw --output data/processed
-
-# 4. Ingest into vector database
-python main.py ingest --chunks-file data/processed/chunks.json --reset
-
-# 5. Start query interface
-python main.py query
-```
+You can now start asking questions like: *"How do I create a new experiment in openBIS?"*
 
 ## Configuration
 
@@ -89,7 +105,7 @@ python main.py query
 Edit `src/desi/__main__.py` and update the `DEFAULT_WIKIJS_URL` variable:
 
 ```python
-DEFAULT_WIKIJS_URL = "https://your-wikijs-site.com"
+DEFAULT_WIKIJS_URL = "https://datastore.bam.de/en/home"
 ```
 
 ### Other Settings
@@ -105,41 +121,41 @@ You can customize various settings:
 
 ### Command Line Interface
 
+For direct interaction or scripting, use the CLI.
+
 ```bash
-# Start interactive query session
+# Start an interactive query session
 python main.py query
 
 # Show database statistics
 python main.py query --stats
 
-# Use different model
+# Use a different LLM model
 python main.py query --model llama2
 ```
 
 ### Web Interface
 
+For a user-friendly chat experience, run the web app.
+
 ```bash
-# Start web interface
+# Start the web interface on the default port (5000)
 python -m desi.web.cli
 
-# Custom host and port
+# Run on a custom host and port
 python -m desi.web.cli --host 0.0.0.0 --port 8080
 ```
+Then open your browser to `http://localhost:5000`.
 
-Then open your browser to `http://localhost:5000`
+## Architecture
 
-### Pipeline Scripts
-
-```bash
-# Run complete pipeline with custom settings
-python scripts/run_pipeline.py --wikijs-url https://your-wiki.com --max-pages 100 --start-query
-
-# Skip scraping, only process existing data
-python scripts/run_pipeline.py --skip-scraping
-
-# Reset database and re-ingest
-python scripts/run_pipeline.py --skip-scraping --skip-processing --reset-db
-```
+DeSi consists of several key components:
+1.  **Scrapers**: Extract content from ReadTheDocs and Wiki.js sites.
+2.  **Processor**: Chunks content and generates embeddings using Ollama.
+3.  **Vector Database**: ChromaDB for storing and retrieving document embeddings.
+4.  **Query Engine**: A RAG pipeline with source prioritization logic.
+5.  **Conversation Engine**: Manages chat history and maintains context.
+6.  **Web Interface**: A Flask-based web application for user interaction.
 
 ## Example Queries
 
@@ -148,14 +164,6 @@ python scripts/run_pipeline.py --skip-scraping --skip-processing --reset-db
 - "What are the steps to register a collection?"
 - "How do I upload data to the data store?"
 - "What is the difference between spaces and projects in openBIS?"
-
-## Source Prioritization
-
-DeSi automatically prioritizes content based on the query context:
-
-- **Data Store operations**: Prioritizes Wiki.js content
-- **General openBIS questions**: Uses both sources with balanced weighting
-- **Specific technical queries**: Retrieves most relevant content regardless of source
 
 ## Directory Structure
 
@@ -168,11 +176,38 @@ DeSi/
 │   ├── utils/           # Utilities (logging, vector database)
 │   └── web/             # Web interface
 ├── scripts/             # Pipeline and utility scripts
+├── tests/               # Unit tests and integration tests
 ├── data/               # Data storage (raw and processed)
-├── requirements.txt    # Python dependencies
+├── pyproject.toml     # Project configuration and dependencies
+├── AUTHORS            # Contributors list
+├── LICENSE            # MIT License
+├── init.py            # Environment setup and validation script
 ├── main.py            # Main entry point
 └── README.md          # This file
 ```
+
+## Development
+
+### Adding New Scrapers
+
+1. Create a new scraper class in `src/desi/scraper/`
+2. Implement the required methods following existing patterns
+3. Add CLI support in `src/desi/scraper/cli.py`
+4. Update the main pipeline to include the new scraper
+
+### Customizing Processing
+
+Modify `src/desi/processor/processor.py` to:
+- Change chunking strategies
+- Add new metadata fields
+- Implement custom embedding models
+
+### Extending the Query Engine
+
+Enhance `src/desi/query/query.py` to:
+- Add new retrieval strategies
+- Implement custom ranking algorithms
+- Add support for different LLM models
 
 ## Troubleshooting
 
@@ -199,37 +234,10 @@ Check database contents:
 python main.py query --stats
 ```
 
-## Development
+## Contributing
 
-### Adding New Scrapers
-
-1. Create a new scraper class in `src/desi/scraper/`
-2. Implement the required methods following existing patterns
-3. Add CLI support in `src/desi/scraper/cli.py`
-4. Update the main pipeline to include the new scraper
-
-### Customizing Processing
-
-Modify `src/desi/processor/processor.py` to:
-- Change chunking strategies
-- Add new metadata fields
-- Implement custom embedding models
-
-### Extending the Query Engine
-
-Enhance `src/desi/query/query.py` to:
-- Add new retrieval strategies
-- Implement custom ranking algorithms
-- Add support for different LLM models
+Contributions are welcome! Please feel free to open an issue to report a bug or suggest a feature. If you would like to contribute code, please open a pull request.
 
 ## License
 
-This project is part of the chatBIS ecosystem. Please refer to the main project license.
-
-## Support
-
-For issues and questions:
-1. Check the troubleshooting section above
-2. Review the logs with `--verbose` flag
-3. Ensure all prerequisites are properly installed
-4. Verify that Ollama models are available
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
