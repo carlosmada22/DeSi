@@ -105,7 +105,7 @@ class ConversationMemory:
 
 def test_conversation_memory():
     """Test the conversation memory system."""
-    print("🧪 Testing DeSi Conversation Memory System")
+    print("Testing DeSi Conversation Memory System")
     print("=" * 50)
     
     # Initialize memory with a test database
@@ -114,7 +114,7 @@ def test_conversation_memory():
     # Test session ID
     session_id = "test_session_123"
     
-    print(f"📝 Testing session: {session_id}")
+    print(f"Testing session: {session_id}")
     
     # Clear any existing data for this session
     memory.clear_session(session_id)
@@ -165,7 +165,7 @@ def test_conversation_memory():
     cleared_messages = memory.get_recent_messages(session_id_2)
     print(f"   After clearing, session 2 has {len(cleared_messages)} messages")
     
-    print("\n✅ All conversation memory tests completed successfully!")
+    print("\n All conversation memory tests completed successfully!")
     
     # Clean up test database
     import os
