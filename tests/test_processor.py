@@ -11,7 +11,10 @@ import logging
 import tempfile
 from pathlib import Path
 
-from ..src.desi.processor.unified_processor import UnifiedProcessor
+from desi.processor.content_normalizer import ContentNormalizer
+from desi.processor.enhanced_chunker import EnhancedChunker
+from desi.processor.metadata_handler import MetadataHandler
+from desi.processor.unified_processor import UnifiedProcessor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -170,9 +173,6 @@ Review the entries and Save."""
 
 def test_individual_components():
     """Test individual components of the processing pipeline."""
-    from ..src.desi.processor.content_normalizer import ContentNormalizer
-    from ..src.desi.processor.enhanced_chunker import EnhancedChunker
-    from ..src.desi.processor.metadata_handler import MetadataHandler
     
     logger.info("Testing individual components...")
     
