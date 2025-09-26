@@ -1,28 +1,148 @@
+[build-system]
+requires = ["setuptools>=61.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
+classifiers = [
+  "Natural Language :: English",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
 name = "DeSi"
 version = "0.1.0"
-description = "A RAG-focused chatbot that provides intelligent assistance for openBIS and Data Store documentation. It sources information from two distinct knowledge bases: ReadTheDocs (openBIS documentation) and Wiki.js (Data Store wiki), using a vector database for efficient retrieval."
+authors = [
+  { name="Carlos Madariaga", email="carlosmadariagaaramendi@gmail.com" },
+]
+maintainers = [
+  { name = "Carlos Madariaga", email = "carlos.madariaga@bam.de" },
+]
+description = "DeSi: DataStore Helper, is a RAG-focused chatbot that provides intelligent assistance for openBIS and Data Store documentation."
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-    "beautifulsoup4>=4.13.0",
-    "langchain-core>=0.3.60",
-    "langchain-ollama>=0.3.3",
-    "langgraph>=0.2.0",
-    "langgraph.checkpoint.sqlite>=2.0.10",
-    "numpy>=2.2.6",
-    "pandas>=2.2.3",
-    "python-dotenv>=1.1.0",
-    "requests>=2.32.0",
-    "scikit-learn>=1.6.0",
-    "flask>=3.1.0",
-    "flask-cors>=6.0.1",
-    "chromadb>=0.4.0",
+    "numpy",
+    "pandas",
+    "beautifulsoup4",
+    "langchain-core",
+    "langchain-ollama",
+    "langgraph",
+    "langgraph.checkpoint.sqlite",
+    "python-dotenv",
+    "requests",
+    "scikit-learn",
+    "flask",
+    "flask-cors",
+    "chromadb",
+    "selenium",
+    "webdriver-manager",
 ]
+
+[project.urls]
+"Homepage" = "https://github.com/carlosmada22/DeSi/"
+"Bug Tracker" = "https://github.com/carlosmada22/DeSi/issues"
+"Documentation" = "https://github.com/carlosmada22/DeSi/"
 
 [project.optional-dependencies]
-eval = [
+dev = [
+    "mypy==1.0.1",
+    "ruff",
+    "pytest",
+    "pytest-timeout",
+    "pytest-cov",
 ]
 
-[project.scripts]
+[tool.ruff]
+# Exclude a variety of commonly ignored directories.
+include = ["desi/*.py", "tests/*.py"]
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    "dependencies",
+]
+# Same as Black.
+line-length = 88
+indent-width = 4
 
+[tool.ruff.lint]
+select = [
+    "E", # pycodestyle
+    "PL", # pylint
+    "F", # Pyflakes
+    "UP", # pyupgrade
+    "I", # isort
+]
+ignore = [
+    "F401", # Module imported but unused
+    "E501", # Line too long ({width} > {limit} characters)
+    "E701", # Multiple statements on one line (colon)
+    "E731", # Do not assign a lambda expression, use a def
+    "E402",  # Module level import not at top of file
+    "PLR0911", # Too many return statements
+    "PLR0912", # Too many branches
+    "PLR0913", # Too many arguments in function definition
+    "PLR0915", # Too many statements
+    "PLR2004", # Magic value used instead of constant
+    "PLW0603", # Using the global statement
+    "PLW2901", # redefined-loop-name
+    "PLR1714", # consider-using-in
+    "PLR5501", # else-if-used
+]
+
+fixable = ["ALL"]
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+# this is entirely optional, you can remove this if you wish to
+[tool.ruff.format]
+# use double quotes for strings.
+quote-style = "double"
+# indent with spaces, rather than tabs.
+indent-style = "space"
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
+
+[tool.mypy]
+strict = false
+ignore_missing_imports = true
+pretty = true
+show_error_codes = true
+show_column_numbers = true
+show_error_context = true
+follow_imports = "silent"
+disable_error_code = "import, annotation-unchecked"
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["dependencies*"]
+namespaces = false

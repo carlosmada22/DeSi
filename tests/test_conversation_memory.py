@@ -6,6 +6,7 @@ This script tests the new SQLite-based conversation memory to ensure
 it properly stores and retrieves user-chatbot exchanges.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -13,8 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 # Import only the ConversationMemory class to avoid ChromaDB dependency
-import sqlite3
 import json
+import sqlite3
 from typing import Dict, List
 
 
@@ -47,51 +48,70 @@ class ConversationMemory:
             """)
             conn.commit()
 
-    def add_message(self, session_id: str, message_type: str, content: str,
-                   token_count: int = 0, metadata: Dict = None):
+    def add_message(
+        self,
+        session_id: str,
+        message_type: str,
+        content: str,
+        token_count: int = 0,
+        metadata: Dict = None,
+    ):
         """Add a message to the conversation history."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             metadata_json = json.dumps(metadata) if metadata else None
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO conversations
                 (session_id, message_type, content, token_count, metadata)
                 VALUES (?, ?, ?, ?, ?)
-            """, (session_id, message_type, content, token_count, metadata_json))
+            """,
+                (session_id, message_type, content, token_count, metadata_json),
+            )
             conn.commit()
 
     def get_recent_messages(self, session_id: str, limit: int = 20) -> List[Dict]:
         """Get the most recent messages for a session."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT message_type, content, token_count, timestamp, metadata
                 FROM conversations
                 WHERE session_id = ?
                 ORDER BY timestamp DESC
                 LIMIT ?
-            """, (session_id, limit))
+            """,
+                (session_id, limit),
+            )
 
             messages = []
-            for row in reversed(cursor.fetchall()):  # Reverse to get chronological order
+            for row in reversed(
+                cursor.fetchall()
+            ):  # Reverse to get chronological order
                 message_type, content, token_count, timestamp, metadata_json = row
                 metadata = json.loads(metadata_json) if metadata_json else {}
-                messages.append({
-                    'type': message_type,
-                    'content': content,
-                    'token_count': token_count,
-                    'timestamp': timestamp,
-                    'metadata': metadata
-                })
+                messages.append(
+                    {
+                        "type": message_type,
+                        "content": content,
+                        "token_count": token_count,
+                        "timestamp": timestamp,
+                        "metadata": metadata,
+                    }
+                )
             return messages
 
     def get_total_tokens(self, session_id: str) -> int:
         """Get total token count for a session."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT SUM(token_count) FROM conversations WHERE session_id = ?
-            """, (session_id,))
+            """,
+                (session_id,),
+            )
             result = cursor.fetchone()[0]
             return result if result else 0
 
@@ -99,7 +119,9 @@ class ConversationMemory:
         """Clear all messages for a specific session."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM conversations WHERE session_id = ?", (session_id,))
+            cursor.execute(
+                "DELETE FROM conversations WHERE session_id = ?", (session_id,)
+            )
             conn.commit()
 
 
@@ -107,73 +129,87 @@ def test_conversation_memory():
     """Test the conversation memory system."""
     print("Testing DeSi Conversation Memory System")
     print("=" * 50)
-    
+
     # Initialize memory with a test database
     memory = ConversationMemory("test_conversation_memory.db")
-    
+
     # Test session ID
     session_id = "test_session_123"
-    
+
     print(f"Testing session: {session_id}")
-    
+
     # Clear any existing data for this session
     memory.clear_session(session_id)
-    
+
     # Test adding messages
     print("\n1. Adding test messages...")
-    memory.add_message(session_id, "user", "Hello, what is openBIS?", 15, {"test": True})
-    memory.add_message(session_id, "assistant", "openBIS is a data management platform for life sciences.", 25, {"model": "test-model"})
+    memory.add_message(
+        session_id, "user", "Hello, what is openBIS?", 15, {"test": True}
+    )
+    memory.add_message(
+        session_id,
+        "assistant",
+        "openBIS is a data management platform for life sciences.",
+        25,
+        {"model": "test-model"},
+    )
     memory.add_message(session_id, "user", "How do I create a sample?", 12)
-    memory.add_message(session_id, "assistant", "To create a sample in openBIS, you need to...", 35)
-    
+    memory.add_message(
+        session_id, "assistant", "To create a sample in openBIS, you need to...", 35
+    )
+
     # Test retrieving messages
     print("2. Retrieving messages...")
     messages = memory.get_recent_messages(session_id, limit=10)
-    
+
     print(f"   Retrieved {len(messages)} messages:")
     for i, msg in enumerate(messages, 1):
-        print(f"   {i}. [{msg['type']}] {msg['content'][:50]}... ({msg['token_count']} tokens)")
-    
+        print(
+            f"   {i}. [{msg['type']}] {msg['content'][:50]}... ({msg['token_count']} tokens)"
+        )
+
     # Test token counting
     print("\n3. Testing token counting...")
     total_tokens = memory.get_total_tokens(session_id)
     print(f"   Total tokens for session: {total_tokens}")
-    
+
     # Test with another session
     print("\n4. Testing multiple sessions...")
     session_id_2 = "test_session_456"
     memory.add_message(session_id_2, "user", "Different session message", 10)
     memory.add_message(session_id_2, "assistant", "Response in different session", 15)
-    
+
     messages_2 = memory.get_recent_messages(session_id_2)
     print(f"   Session 2 has {len(messages_2)} messages")
     print(f"   Session 2 total tokens: {memory.get_total_tokens(session_id_2)}")
-    
+
     # Test message limit
     print("\n5. Testing message limit...")
     for i in range(10):
         memory.add_message(session_id, "user", f"Test message {i}", 5)
         memory.add_message(session_id, "assistant", f"Test response {i}", 8)
-    
+
     limited_messages = memory.get_recent_messages(session_id, limit=5)
     print(f"   Requested 5 messages, got {len(limited_messages)}")
     print(f"   Latest message: {limited_messages[-1]['content']}")
-    
+
     # Test clearing session
     print("\n6. Testing session clearing...")
     memory.clear_session(session_id_2)
     cleared_messages = memory.get_recent_messages(session_id_2)
     print(f"   After clearing, session 2 has {len(cleared_messages)} messages")
-    
+
     print("\n All conversation memory tests completed successfully!")
-    
+
     # Clean up test database
-    import os
     try:
         os.remove("test_conversation_memory.db")
         print("🧹 Cleaned up test database")
-    except:
+    except FileNotFoundError:
         pass
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+
 
 if __name__ == "__main__":
     test_conversation_memory()
