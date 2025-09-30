@@ -1,12 +1,12 @@
-# This is the list of BAM Masterdata's significant contributors.
+# This is the list of DeSi significant contributors.
 #
 # This does not necessarily list everyone who has contributed code,
-# especially since many employees of one corporation may be contributing to the
-# definition of object types, property types, and vocabularies in the Masterdata
-# datamodel.
+# especially since listed contributors are creating documentation,
+# helping with deployments, and other topics.
 # To see the full list of code contributors, see the revision history in
 # source control.
 
+- Carlos Madariaga Aramendi
 - Angela Ariza de Schellenberger
 - Caroline Demidova
 - Jose M. Pizarro Blanco
