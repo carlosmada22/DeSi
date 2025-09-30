@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Unified Processor for Multi-Source Documentation
 
@@ -43,6 +43,13 @@ try:
 except ImportError:
     CHROMADB_AVAILABLE = False
 
+    class EmbeddingFunction:  # type: ignore[misc]
+        """Fallback embedding interface when chromadb is unavailable."""
+
+        def __call__(self, input):  # type: ignore[override]
+            raise NotImplementedError(
+                "EmbeddingFunction requires chromadb to be installed."
+            )
 logger = logging.getLogger(__name__)
 
 
@@ -329,7 +336,7 @@ class UnifiedProcessor:
             logger.warning("ChromaDB not available or not configured")
             return
 
-        logger.info(f"🔧 Building ChromaDB collection '{self.collection_name}'...")
+        logger.info(f"ðŸ”§ Building ChromaDB collection '{self.collection_name}'...")
 
         # Initialize ChromaDB client
         chroma_client = chromadb.PersistentClient(
@@ -387,7 +394,7 @@ class UnifiedProcessor:
 
         logger.info(f"Adding {count} chunks to ChromaDB...")
         collection.add(ids=ids, documents=documents, metadatas=metadatas)
-        logger.info(f"✅ Successfully indexed {count} chunks in ChromaDB collection '{self.collection_name}'.")
+        logger.info(f"âœ… Successfully indexed {count} chunks in ChromaDB collection '{self.collection_name}'.")
 
     def save_processed_data(self, chunks: List[Dict], format: str = 'both') -> None:
         """
@@ -481,3 +488,4 @@ class UnifiedProcessor:
 
         logger.info(f"Processing complete: {stats}")
         return stats
+

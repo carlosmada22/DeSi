@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 import logging
 import re
 import time
@@ -7,14 +7,21 @@ from typing import Dict, List, Optional, Set
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.common.exceptions import TimeoutException
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
-from webdriver_manager.chrome import ChromeDriverManager
+try:
+    from selenium import webdriver
+    from selenium.common.exceptions import TimeoutException
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service as ChromeService
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.support.ui import WebDriverWait
+    from webdriver_manager.chrome import ChromeDriverManager
+    SELENIUM_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    webdriver = None  # type: ignore
+    TimeoutException = Exception  # type: ignore
+    Options = ChromeService = By = EC = WebDriverWait = ChromeDriverManager = None  # type: ignore
+    SELENIUM_AVAILABLE = False
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -63,9 +70,16 @@ class WikiJSScraper:
         self.parser = WikiJSParser()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.domain = urlparse(self.base_url).netloc
-        self.driver = self._setup_driver()
+        if SELENIUM_AVAILABLE:
+            self.driver = self._setup_driver()
+        else:
+            self.driver = None
+            logger.warning("Selenium is not available. WikiJSScraper will not perform live scraping.")
 
     def _setup_driver(self):
+        if not SELENIUM_AVAILABLE:
+            raise RuntimeError("Selenium is required to set up the WikiJSScraper driver.")
+
         logger.info("Setting up Selenium WebDriver for headless operation...")
         chrome_options = Options()
         chrome_options.add_argument("--headless")
@@ -87,6 +101,8 @@ class WikiJSScraper:
 
     def scrape(self):
         logger.info(f"Starting to scrape {self.base_url}")
+        if not self.driver:
+            raise RuntimeError("Selenium driver is not available. Install selenium to enable scraping.")
         pages_scraped = 0
         try:
             while self.urls_to_visit and (self.max_pages is None or pages_scraped < self.max_pages):
@@ -154,3 +170,7 @@ class WikiJSScraper:
         if self.driver:
             logger.info("Closing WebDriver.")
             self.driver.quit()
+
+
+
+
