@@ -130,21 +130,23 @@ def convert_diagram_to_text(content):
 
 def clean_chunk_content(content):
     # Check if the content looks like it contains any part of a mermaid diagram
-    if ('-->' in content or '&gt;' in content or 'classDef' in content) and re.search(r'\w+\(\[', content):
+    if ("-->" in content or "&gt;" in content or "classDef" in content) and re.search(
+        r"\w+\(\[", content
+    ):
         text = _parse_mermaid_logic(content)
     else:
         text = content
 
     # Use BeautifulSoup to remove any remaining HTML tags and comments
-    soup = BeautifulSoup(text, 'html.parser')
+    soup = BeautifulSoup(text, "html.parser")
     for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
         comment.extract()
     for tag in soup.find_all(True):
-        tag.unwrap() # Removes tag, keeps content
-        
+        tag.unwrap()  # Removes tag, keeps content
+
     text = str(soup)
     # Final cleanup
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
@@ -336,7 +338,7 @@ def process_all_markdown_files(root_directory):
     return all_chunks
 
 
-# --- MODIFIED: Function to Generate Embeddings and Save to ChromaDB ---
+# Function to Generate Embeddings and Save to ChromaDB
 def create_and_persist_vectordb(chunks, persist_directory):
     if not chunks:
         print("No chunks to process. Vector database will not be created.")
@@ -417,12 +419,12 @@ def export_chunks(chunks, output_dir="."):
 
 
 if __name__ == "__main__":
-    YOUR_ROOT_DIRECTORY = "./data/raw/wikijs/daily"
+    ROOT_DIRECTORY = "./data/raw/wikijs/daily"
     OUTPUT_DIRECTORY = "./data/processed/wikijs"
     CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
 
     # Step 1: Process all markdown files into chunks
-    final_chunks = process_all_markdown_files(YOUR_ROOT_DIRECTORY)
+    final_chunks = process_all_markdown_files(ROOT_DIRECTORY)
 
     # Export the chunks to JSON, CSV, and JSONL
     if final_chunks:
