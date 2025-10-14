@@ -10,13 +10,15 @@ and saves the output to JSON and CSV files for a RAG pipeline.
 import argparse
 import json
 import logging
+import os
 import re
 import textwrap
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-import numpy as np
-import pandas as pd
+from langchain_community.embeddings import OllamaEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_community.vectorstores.utils import filter_complex_metadata
 
 # Configure logging
 logging.basicConfig(
@@ -46,14 +48,56 @@ except ImportError:
     OLLAMA_AVAILABLE = False
 
 
-# --- YOUR INTELLIGENT CHUNKER CLASS (with minor cleanup) ---
+# --- Helper Class for Storing Chunks (from ds_processor) ---
+class Document:
+    def __init__(self, page_content, metadata):
+        self.page_content = page_content
+        self.metadata = metadata
+
+    def __repr__(self):
+        metadata_str = ", ".join(f"{k}='{v}'" for k, v in self.metadata.items())
+        content_preview = self.page_content[:200].strip().replace("\n", " ")
+        return f"Document(page_content='{content_preview}...', metadata={{{metadata_str}}})"
+
+
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, o):
+        # This is included for compatibility with the ds_processor export format,
+        # though this script doesn't handle datetime objects.
+        return super().default(o)
+
+
+def _clean_markdown_content(content: str) -> str:
+    """Cleans raw markdown content with robust, multi-stage logic."""
+    # 1. **THE KEY FIX**: Normalize whitespace. Replace the non-breaking space
+    # character (U+00A0) with a regular space. This is the root cause of the issue.
+    content = content.replace("\u00a0", " ")
+
+    # 2. Remove permalink artifacts
+    content = re.sub(r'\[\]\(.*? "Permalink to this heading"\)', "", content)
+
+    # 3. Process paragraph by paragraph to find and fix indented code blocks
+    paragraphs = content.split("\n\n")
+    cleaned_paragraphs = []
+    for p in paragraphs:
+        # Check if the paragraph starts with whitespace but is not a list/header
+        if p and p[0].isspace() and not p.strip().startswith(("*", "-", "#")):
+            p = textwrap.dedent(p)
+        cleaned_paragraphs.append(p)
+    content = "\n\n".join(cleaned_paragraphs)
+
+    # 4. Collapse excessive newlines
+    content = re.sub(r"\n{3,}", "\n\n", content)
+
+    return content.strip()
+
+
 class ContentChunker:
     """Class for chunking Markdown content into smaller, context-aware pieces."""
 
     def __init__(self, min_chunk_size: int = 100, max_chunk_size: int = 1000):
         """
         Initialize the chunker.
-        Note: The original 'chunk_overlap' was removed as it was not used in the logic.
         Context is maintained by prepending headers, which is a more robust method.
 
         Args:
@@ -126,185 +170,138 @@ class ContentChunker:
         return chunks
 
 
-# --- YOUR EMBEDDING GENERATOR (unchanged) ---
-class EmbeddingGenerator:
-    """Class for generating embeddings for content chunks."""
-
-    def __init__(self):
-        if OLLAMA_AVAILABLE:
-            logger.info("Using Ollama for embeddings with model 'nomic-embed-text'")
-            self.embeddings_model = OllamaEmbeddings(model="nomic-embed-text")
-        else:
-            logger.warning("Using dummy embeddings (random vectors)")
-            self.embeddings_model = None
-
-    def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        if not texts:
-            return []
-        if OLLAMA_AVAILABLE and self.embeddings_model:
-            try:
-                return self.embeddings_model.embed_documents(texts)
-            except Exception as e:
-                logger.error(f"Error generating embeddings with Ollama: {e}")
-                logger.warning("Falling back to dummy embeddings.")
-        return [self._generate_dummy_embedding() for _ in texts]
-
-    def _generate_dummy_embedding(self, dim: int = 768) -> List[float]:
-        # nomic-embed-text has a dimension of 768
-        vec = np.random.normal(0, 1, dim)
-        vec /= np.linalg.norm(vec)
-        return vec.tolist()
-
-
-# --- YOUR RAG PROCESSOR (modified for .md files and metadata reconstruction) ---
-class RAGProcessor:
-    """Class for processing content for RAG."""
-
-    def __init__(
-        self, input_dir: str, output_dir: str, min_chunk_size: int, max_chunk_size: int
-    ):
-        self.input_dir = Path(input_dir)
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.chunker = ContentChunker(min_chunk_size, max_chunk_size)
-        self.embedding_generator = EmbeddingGenerator()
-
-    def _clean_markdown_content(self, content: str) -> str:
-        """Cleans raw markdown content with robust, multi-stage logic."""
-        # 1. Remove permalink artifacts
-        content = re.sub(r'\[\]\(.*? "Permalink to this heading"\)', "", content)
-
-        # 2. **ROBUST DEDENTING LOGIC**
-        # Process paragraph by paragraph to find and fix indented code blocks
-        paragraphs = content.split("\n\n")
-        cleaned_paragraphs = []
-        for p in paragraphs:
-            # Check if the paragraph starts with whitespace but is not a list or header
-            if p and p[0].isspace() and not p.strip().startswith(("*", "-", "#")):
-                # textwrap.dedent intelligently removes common leading whitespace
-                p = textwrap.dedent(p)
-            cleaned_paragraphs.append(p)
-        content = "\n\n".join(cleaned_paragraphs)
-
-        # 3. Collapse excessive newlines
-        content = re.sub(r"\n{3,}", "\n\n", content)
-
-        return content.strip()
-
-    def _metadata_from_filename(self, file_path: Path) -> Dict[str, str]:
-        """Reconstructs URL and Title from the scraped filename."""
-        base_url = "https://openbis.readthedocs.io/"
-        # en_20.10.0-11_user-documentation_general-users.md -> en/20.10.0-11/user-documentation/general-users.html
-        parts = file_path.stem.split("_")
-        url_path = "/".join(parts) + ".html"
-        full_url = base_url + url_path
-
-        # Create a simple title from the last part of the filename
-        title = parts[-1].replace("-", " ").capitalize()
-        return {"url": full_url, "title": title}
-
-    def process_file(self, file_path: Path) -> List[Dict]:
-        logger.info(f"Processing {file_path.name}")
+def chunk_openbis_document(file_path: str, root_directory: str) -> List[Document]:
+    """
+    Loads, cleans, enriches, and chunks a single openBIS markdown file.
+    """
+    logger.info(f"Processing file: {file_path}")
+    try:
         with open(file_path, encoding="utf-8") as f:
             raw_content = f.read()
+    except FileNotFoundError:
+        logger.error(f"File not found: {file_path}")
+        return []
 
-        cleaned_content = self._clean_markdown_content(raw_content)
-        metadata = self._metadata_from_filename(file_path)
+    # 1. Clean the specific ReadtheDocs artifacts
+    cleaned_content = _clean_markdown_content(raw_content)
 
-        chunks = self.chunker.chunk_content(cleaned_content)
-        if not chunks:
-            logger.warning(f"No chunks generated for {file_path.name}")
-            return []
+    # 2. Enrich Metadata
+    metadata = {}
+    path_obj = Path(file_path)
+    relative_path = os.path.relpath(file_path, root_directory)
 
-        embeddings = self.embedding_generator.generate_embeddings(chunks)
+    metadata["origin"] = "openbis"
+    metadata["source"] = relative_path.replace("\\", "/")
 
-        processed_chunks = []
-        for i, chunk in enumerate(chunks):
-            processed_chunks.append(
-                {
-                    "title": metadata["title"],
-                    "url": metadata["url"],
-                    "content": chunk,
-                    "chunk_id": f"{file_path.stem}_{i}",
-                }
-            )
-        return processed_chunks
+    # Reconstruct original URL and create a title
+    base_url = "https://openbis.readthedocs.io/"
+    parts = path_obj.stem.split("_")
+    metadata["url"] = base_url + "/".join(parts) + ".html"
+    metadata["title"] = parts[-1].replace("-", " ").capitalize()
 
-    def process_all_files(self) -> List[Dict]:
-        all_chunks = []
-        # MODIFICATION: Look for .md files instead of .txt
-        for file_path in sorted(self.input_dir.glob("*.md")):
-            try:
-                chunks = self.process_file(file_path)
+    # Create section from path structure (e.g., 'user-documentation')
+    if len(parts) > 2:
+        metadata["section"] = parts[2].replace("-", " ").title()
+    else:
+        metadata["section"] = "General"
+
+    metadata["id"] = f"openbis-{path_obj.stem.lower()}"
+
+    # 3. Chunk the document
+    chunker = ContentChunker()
+    content_chunks = chunker.chunk_content(cleaned_content)
+
+    # 4. Create Document objects with enriched metadata
+    final_chunks = []
+    for i, content in enumerate(content_chunks):
+        chunk_metadata = metadata.copy()
+        chunk_metadata["id"] += f"-{i}"  # Make chunk ID unique
+        final_chunks.append(Document(page_content=content, metadata=chunk_metadata))
+
+    return final_chunks
+
+
+def process_all_openbis_files(root_directory: str) -> List[Document]:
+    """
+    Recursively finds and processes all markdown files for the openBIS source.
+    """
+    if not os.path.isdir(root_directory):
+        logger.error(f"Error: The specified directory does not exist: {root_directory}")
+        return []
+
+    all_chunks = []
+    for dirpath, _, filenames in os.walk(root_directory):
+        for filename in filenames:
+            if filename.endswith(".md"):
+                file_path = os.path.join(dirpath, filename)
+                chunks = chunk_openbis_document(file_path, root_directory)
                 all_chunks.extend(chunks)
-            except Exception as e:
-                logger.error(f"Error processing {file_path}: {e}", exc_info=True)
-        return all_chunks
 
-    def save_processed_data(self, chunks: List[Dict]):
-        if not chunks:
-            logger.warning("No chunks were processed. Nothing to save.")
-            return
+    return all_chunks
 
-        # Save the chunks as a standard JSON file
-        chunks_file = self.output_dir / "chunks.json"
-        with open(chunks_file, "w", encoding="utf-8") as f:
-            json.dump(chunks, f, ensure_ascii=False, indent=2)
-        logger.info(f"Saved {len(chunks)} chunks to {chunks_file}")
 
-        # Save the chunks as a JSON Lines file
-        jsonl_file = self.output_dir / "chunks.jsonl"
-        with open(jsonl_file, "w", encoding="utf-8") as f:
-            for chunk in chunks:
-                # Convert each dictionary to a JSON string and write it on its own line
-                f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
-        logger.info(f"Saved {len(chunks)} chunks to {jsonl_file}")
+def create_and_persist_vectordb(chunks: List[Document], persist_directory: str):
+    if not chunks:
+        logger.warning("No chunks to process. Vector database will not be created.")
+        return
 
-        # Create a DataFrame for the CSV file (for easier viewing)
-        df = pd.DataFrame(
-            [{k: v for k, v in chunk.items() if k != "embedding"} for chunk in chunks]
+    filtered_chunks = filter_complex_metadata(chunks)
+
+    logger.info("Initializing embedding model...")
+    embedding_model = OllamaEmbeddings(model="nomic-embed-text")
+    logger.info("-> Model: nomic-embed-text")
+
+    logger.info(f"Creating/updating vector database at '{persist_directory}'...")
+    logger.info(f"This may take a while, embedding {len(filtered_chunks)} chunks...")
+
+    Chroma.from_documents(
+        documents=filtered_chunks,
+        embedding=embedding_model,
+        persist_directory=persist_directory,
+    )
+    logger.info("-> Vector database processing complete.")
+
+
+def export_chunks(chunks: List[Document], output_dir: str):
+    """Exports the list of Document chunks to JSON, CSV, and JSONL files."""
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    data_to_export = [
+        {"page_content": chunk.page_content, "metadata": chunk.metadata}
+        for chunk in chunks
+    ]
+
+    # Export to JSON
+    json_path = os.path.join(output_dir, "chunks_openbis.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(
+            data_to_export, f, indent=2, ensure_ascii=False, cls=CustomJSONEncoder
         )
-        csv_file = self.output_dir / "chunks.csv"
-        df.to_csv(csv_file, index=False)
-        logger.info(f"Saved chunk metadata for review to {csv_file}")
+    logger.info(f"\nSuccessfully exported {len(chunks)} chunks to {json_path}")
 
-    def process(self):
-        logger.info(f"Starting processing of files in {self.input_dir}")
-        chunks = self.process_all_files()
-        self.save_processed_data(chunks)
-        logger.info(f"Finished processing. Total chunks created: {len(chunks)}")
+    # Export to JSONL
+    jsonl_path = os.path.join(output_dir, "chunks_openbis.jsonl")
+    with open(jsonl_path, "w", encoding="utf-8") as f:
+        for item in data_to_export:
+            f.write(json.dumps(item, ensure_ascii=False, cls=CustomJSONEncoder) + "\n")
+    logger.info(f"Successfully exported {len(chunks)} chunks to {jsonl_path}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Process Markdown files for a RAG pipeline."
-    )
-    parser.add_argument(
-        "input_dir", type=str, help="Directory containing the scraped .md files."
-    )
-    parser.add_argument(
-        "output_dir",
-        type=str,
-        help="Directory to save the processed chunks (JSON and CSV).",
-    )
-    parser.add_argument(
-        "--min-chunk-size",
-        type=int,
-        default=200,
-        help="Minimum size of a chunk in characters.",
-    )
-    parser.add_argument(
-        "--max-chunk-size",
-        type=int,
-        default=1500,
-        help="Maximum size of a chunk in characters.",
-    )
-    args = parser.parse_args()
+    ROOT_DIRECTORY = "./data/raw/openbis/improved"
+    OUTPUT_DIRECTORY = "./data/processed/openbis"
+    CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
 
-    processor = RAGProcessor(
-        input_dir=args.input_dir,
-        output_dir=args.output_dir,
-        min_chunk_size=args.min_chunk_size,
-        max_chunk_size=args.max_chunk_size,
-    )
-    processor.process()
+    # Step 1: Process all markdown files into chunks with enriched metadata
+    final_chunks = process_all_openbis_files(ROOT_DIRECTORY)
+
+    if final_chunks:
+        # Step 2 (Optional): Export chunks to files for inspection
+        export_chunks(final_chunks, OUTPUT_DIRECTORY)
+
+        # Step 3: Generate embeddings and save them to ChromaDB
+        create_and_persist_vectordb(final_chunks, CHROMA_PERSIST_DIRECTORY)
+        logger.info(f"\nProcessing complete. Total Chunks Created: {len(final_chunks)}")
+    else:
+        logger.warning("No markdown files were found or processed.")
