@@ -27,18 +27,20 @@ dependencies = [
     "numpy",
     "pandas",
     "beautifulsoup4",
+    "markdownify",
     "langchain-core",
     "langchain-ollama",
+    "langchain_community",
     "langgraph",
     "langgraph.checkpoint.sqlite",
     "python-dotenv",
+    "lxml",
+    "PyYAML",
     "requests",
     "scikit-learn",
     "flask",
     "flask-cors",
     "chromadb",
-    "selenium",
-    "webdriver-manager",
 ]
 
 [project.urls]
@@ -51,8 +53,10 @@ dev = [
     "mypy==1.0.1",
     "ruff",
     "pytest",
+    "pytest-mock",
     "pytest-timeout",
     "pytest-cov",
+    "coveralls",
 ]
 
 [tool.ruff]

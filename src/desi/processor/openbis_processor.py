@@ -7,14 +7,14 @@ header-aware strategy, generates embeddings (using Ollama or dummy data),
 and saves the output to JSON and CSV files for a RAG pipeline.
 """
 
-import argparse
+import csv
 import json
 import logging
 import os
 import re
 import textwrap
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import Chroma
@@ -167,6 +167,10 @@ class ContentChunker:
         if current_chunk and len(current_chunk) >= self.min_chunk_size:
             chunks.append(current_chunk.strip())
 
+        # If no chunks were created but there was content, return the whole content as one chunk.
+        if not chunks and content:
+            return [content.strip()]
+
         return chunks
 
 
@@ -280,6 +284,31 @@ def export_chunks(chunks: List[Document], output_dir: str):
         )
     logger.info(f"\nSuccessfully exported {len(chunks)} chunks to {json_path}")
 
+    # Export to CSV
+    csv_path = os.path.join(output_dir, "chunks_openbis.csv")
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        all_meta_keys = set().union(*(d["metadata"].keys() for d in data_to_export))
+
+        preferred_order = [
+            "id",
+            "origin",
+            "section",
+            "source",
+            "url",
+            "title",
+            "page_content",
+        ]
+        remaining_keys = sorted(list(all_meta_keys - set(preferred_order)))
+        fieldnames = preferred_order + remaining_keys
+
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for item in data_to_export:
+            row = {"page_content": item["page_content"]}
+            row.update(item["metadata"])
+            writer.writerow(row)
+    logger.info(f"Successfully exported {len(chunks)} chunks to {csv_path}")
+
     # Export to JSONL
     jsonl_path = os.path.join(output_dir, "chunks_openbis.jsonl")
     with open(jsonl_path, "w", encoding="utf-8") as f:
@@ -288,20 +317,32 @@ def export_chunks(chunks: List[Document], output_dir: str):
     logger.info(f"Successfully exported {len(chunks)} chunks to {jsonl_path}")
 
 
-if __name__ == "__main__":
-    ROOT_DIRECTORY = "./data/raw/openbis/improved"
-    OUTPUT_DIRECTORY = "./data/processed/openbis"
-    CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
+# Main processing function to be called from other scripts
+def run_openbis_processing(root_directory, output_directory, chroma_persist_directory):
+    """
+    Executes the full processing pipeline for the openBIS data source.
+    """
+    print("\n--- Starting openBIS Processing ---")
 
     # Step 1: Process all markdown files into chunks with enriched metadata
-    final_chunks = process_all_openbis_files(ROOT_DIRECTORY)
+    final_chunks = process_all_openbis_files(root_directory)
 
     if final_chunks:
         # Step 2 (Optional): Export chunks to files for inspection
-        export_chunks(final_chunks, OUTPUT_DIRECTORY)
+        export_chunks(final_chunks, output_directory)
 
         # Step 3: Generate embeddings and save them to ChromaDB
-        create_and_persist_vectordb(final_chunks, CHROMA_PERSIST_DIRECTORY)
-        logger.info(f"\nProcessing complete. Total Chunks Created: {len(final_chunks)}")
+        create_and_persist_vectordb(final_chunks, chroma_persist_directory)
+
+        print(f"--- openBIS Processing Complete. Total Chunks: {len(final_chunks)} ---")
     else:
-        logger.warning("No markdown files were found or processed.")
+        print("No openBIS markdown files were found or processed.")
+
+
+if __name__ == "__main__":
+    # Default paths for standalone execution
+    ROOT_DIRECTORY = "./data/raw/openbis"
+    OUTPUT_DIRECTORY = "./data/processed/openbis"
+    CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
+
+    run_openbis_processing(ROOT_DIRECTORY, OUTPUT_DIRECTORY, CHROMA_PERSIST_DIRECTORY)

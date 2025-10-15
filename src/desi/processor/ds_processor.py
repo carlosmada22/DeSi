@@ -45,7 +45,9 @@ def _parse_mermaid_logic(diagram_text):
     try:
         # 1. Pre-clean the diagram text
         cleaned_text = diagram_text.replace("&gt;", ">")
-        cleaned_text = re.sub(r"(?m)^\s*(%%|classDef|class|```).*$", "", cleaned_text)
+        cleaned_text = re.sub(
+            r"(?m)^\s*(%%|classDef|class|```|graph).*$", "", cleaned_text
+        )
 
         # 2. Most robust regex to capture all node content
         nodes = re.findall(
@@ -355,7 +357,7 @@ def create_and_persist_vectordb(chunks, persist_directory):
     print(f"\nCreating and persisting vector database to '{persist_directory}'...")
     print(f"This may take a while, embedding {len(filtered_chunks)} chunks...")
 
-    vectordb = Chroma.from_documents(
+    Chroma.from_documents(
         documents=filtered_chunks,  # <-- Use the filtered chunks
         embedding=embedding_model,
         persist_directory=persist_directory,
@@ -378,7 +380,7 @@ def export_chunks(chunks, output_dir="."):
     ]
 
     # --- Export to JSON ---
-    json_path = os.path.join(output_dir, "chunks.json")
+    json_path = os.path.join(output_dir, "chunks_datastore.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(
             data_to_export, f, indent=4, ensure_ascii=False, cls=CustomJSONEncoder
@@ -386,7 +388,7 @@ def export_chunks(chunks, output_dir="."):
     print(f"\nSuccessfully exported {len(chunks)} chunks to {json_path}")
 
     # --- Export to CSV ---
-    csv_path = os.path.join(output_dir, "chunks.csv")
+    csv_path = os.path.join(output_dir, "chunks_datastore.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         all_meta_keys = set()
         for item in data_to_export:
@@ -411,28 +413,39 @@ def export_chunks(chunks, output_dir="."):
     print(f"Successfully exported {len(chunks)} chunks to {csv_path}")
 
     # --- Export to JSONL ---
-    jsonl_path = os.path.join(output_dir, "chunks.jsonl")
+    jsonl_path = os.path.join(output_dir, "chunks_datastore.jsonl")
     with open(jsonl_path, "w", encoding="utf-8") as f:
         for item in data_to_export:
             f.write(json.dumps(item, ensure_ascii=False, cls=CustomJSONEncoder) + "\n")
     print(f"Successfully exported {len(chunks)} chunks to {jsonl_path}")
 
 
+# Main processing function to be called from other scripts
+def run_dswiki_processing(root_directory, output_directory, chroma_persist_directory):
+    """
+    Executes the full processing pipeline for the DSWiki data source.
+    """
+    print("--- Starting DSWiki Processing ---")
+
+    # Step 1: Process all markdown files into chunks
+    final_chunks = process_all_markdown_files(root_directory)
+
+    if final_chunks:
+        # Step 2 (Optional): Export chunks to files for inspection
+        export_chunks(final_chunks, output_directory)
+
+        # Step 3: Generate embeddings and save them to ChromaDB
+        create_and_persist_vectordb(final_chunks, chroma_persist_directory)
+
+        print(f"--- DSWiki Processing Complete. Total Chunks: {len(final_chunks)} ---")
+    else:
+        print("No DSWiki markdown files were found or processed.")
+
+
 if __name__ == "__main__":
-    ROOT_DIRECTORY = "./data/raw/wikijs/daily"
+    # Default paths for standalone execution
+    ROOT_DIRECTORY = "./data/raw/wikijs"
     OUTPUT_DIRECTORY = "./data/processed/wikijs"
     CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
 
-    # Step 1: Process all markdown files into chunks
-    final_chunks = process_all_markdown_files(ROOT_DIRECTORY)
-
-    # Export the chunks to JSON, CSV, and JSONL
-    if final_chunks:
-        # Step 2 (Optional): Export chunks to files for inspection
-        export_chunks(final_chunks, OUTPUT_DIRECTORY)
-
-        # Step 3: Generate embeddings and save them to ChromaDB
-        create_and_persist_vectordb(final_chunks, CHROMA_PERSIST_DIRECTORY)
-        print(f"Total Chunks Created: {len(final_chunks)}")
-    else:
-        print("No markdown files were found or processed.")
+    run_dswiki_processing(ROOT_DIRECTORY, OUTPUT_DIRECTORY, CHROMA_PERSIST_DIRECTORY)

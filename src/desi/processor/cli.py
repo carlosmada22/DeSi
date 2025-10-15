@@ -1,193 +1,166 @@
 #!/usr/bin/env python3
 """
-CLI for Enhanced Multi-Source Documentation Processor
+Master CLI for the Unified RAG Knowledge Base Builder
 
-Complete end-to-end pipeline for processing documentation from multiple sources
-(OpenBIS, Wiki.js) with intelligent chunking, embedding generation, and ChromaDB storage.
+This script serves as the single entry point for the entire data processing pipeline.
+It orchestrates the deletion of the old database and the execution of specialized
+processors for DSWiki and openBIS to build a fresh, unified ChromaDB vector store.
 """
 
 import argparse
 import logging
+import os
+import shutil
 import sys
 from pathlib import Path
 
-from .unified_processor import UnifiedProcessor
+# Use relative imports, as this CLI is part of a package
+from .ds_processor import run_dswiki_processing
+from .openbis_processor import run_openbis_processing
 
-# Configure logging
+# --- Configure Logging ---
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
 
+# --- DEFAULT PATH CONFIGURATION ---
+# These paths are used if no arguments are provided on the command line.
+DEFAULT_DSWIKI_INPUT = "./data/raw/wikijs/daily"
+DEFAULT_OPENBIS_INPUT = "./data/raw/openbis/improved"
+DEFAULT_OUTPUT_DIR = "./data/processed"
+DEFAULT_CHROMA_DIR = "./desi_vectordb"
+# ------------------------------------
+
+
+def delete_existing_database(chroma_dir: str):
+    """
+    Safely deletes the specified ChromaDB directory to ensure a fresh build.
+    """
+    if os.path.exists(chroma_dir):
+        logger.info(f"Deleting existing vector database at: {chroma_dir}")
+        try:
+            shutil.rmtree(chroma_dir)
+            logger.info("Database deleted successfully.")
+        except OSError as e:
+            logger.error(f"Error deleting directory {chroma_dir}: {e}")
+            sys.exit(1)
+    else:
+        logger.info(f"No existing database found at {chroma_dir}. Starting fresh.")
+
 
 def main():
-    """Main CLI entry point for complete RAG pipeline."""
+    """Main CLI entry point for the complete RAG pipeline."""
     parser = argparse.ArgumentParser(
-        description="Enhanced Multi-Source Documentation Processor with ChromaDB Integration",
+        description="Unified RAG Knowledge Base Builder CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Complete pipeline: process, embed, and store in ChromaDB
-  python -m desi.processor.cli --input-dir data/raw --output-dir data/processed
+  # Run the full pipeline with default paths (most common use case):
+  python -m desi.processor.cli
 
-  # Process only (no ChromaDB)
-  python -m desi.processor.cli --input-dir data/raw --output-dir data/processed --no-chromadb
+  # Override the ChromaDB location for a test run:
+  python -m desi.processor.cli --chroma-dir ./test_vectordb
 
-  # Custom chunk sizes and ChromaDB directory
-  python -m desi.processor.cli --input-dir data/raw --output-dir data/processed --chroma-dir ./my_chroma --min-chunk-size 150
-        """
-    )
-    
-    # Input/Output arguments
-    parser.add_argument(
-        '--input-dir',
-        type=str,
-        required=True,
-        help='Directory containing scraped text files'
-    )
-    
-    parser.add_argument(
-        '--output-dir',
-        type=str,
-        required=True,
-        help='Directory to save processed output'
+  # Run the pipeline but append to the DB instead of deleting it:
+  python -m desi.processor.cli --no-delete
+        """,
     )
 
-    # ChromaDB arguments
+    # --- Path Arguments with Defaults ---
     parser.add_argument(
-        '--chroma-dir',
+        "--dswiki-input",
         type=str,
-        help='ChromaDB storage directory (enables ChromaDB if provided)'
+        default=DEFAULT_DSWIKI_INPUT,
+        help=f"Input directory for DSWiki files. Default: {DEFAULT_DSWIKI_INPUT}",
+    )
+    parser.add_argument(
+        "--openbis-input",
+        type=str,
+        default=DEFAULT_OPENBIS_INPUT,
+        help=f"Input directory for openBIS files. Default: {DEFAULT_OPENBIS_INPUT}",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"Parent directory for processed outputs. Default: {DEFAULT_OUTPUT_DIR}",
+    )
+    parser.add_argument(
+        "--chroma-dir",
+        type=str,
+        default=DEFAULT_CHROMA_DIR,
+        help=f"Directory for the ChromaDB vector store. Default: {DEFAULT_CHROMA_DIR}",
     )
 
+    # --- Control Flags ---
     parser.add_argument(
-        '--collection-name',
-        type=str,
-        default='docs',
-        help='ChromaDB collection name (default: docs)'
+        "--no-delete",
+        action="store_true",
+        help="Do not delete the existing ChromaDB; append to it instead.",
     )
-    
-    # Chunking parameters
     parser.add_argument(
-        '--min-chunk-size',
-        type=int,
-        default=100,
-        help='Minimum chunk size in characters (default: 100)'
+        "--verbose", action="store_true", help="Enable verbose (DEBUG) logging."
     )
-    
-    parser.add_argument(
-        '--max-chunk-size',
-        type=int,
-        default=1000,
-        help='Maximum chunk size in characters (default: 1000)'
-    )
-    
-    parser.add_argument(
-        '--chunk-overlap',
-        type=int,
-        default=50,
-        help='Overlap between chunks in characters (default: 50)'
-    )
-    
-    # Output format
-    parser.add_argument(
-        '--format',
-        choices=['json', 'csv', 'jsonl', 'both'],
-        default='both',
-        help='Output format (default: both)'
-    )
-    
-    # Embeddings
-    parser.add_argument(
-        '--no-embeddings',
-        action='store_true',
-        help='Disable embedding generation'
-    )
-    
-    # Logging
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Enable verbose logging'
-    )
-    
-    parser.add_argument(
-        '--quiet',
-        action='store_true',
-        help='Suppress all output except errors'
-    )
-    
+
     args = parser.parse_args()
-    
-    # Configure logging level
-    if args.quiet:
-        logging.getLogger().setLevel(logging.ERROR)
-    elif args.verbose:
+
+    if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    
-    # Validate input directory
-    input_path = Path(args.input_dir)
-    if not input_path.exists():
-        logger.error(f"Input directory does not exist: {input_path}")
-        sys.exit(1)
 
-    # Create output directory
-    output_path = Path(args.output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
+    # --- Path Validation ---
+    for path in [args.dswiki_input, args.openbis_input]:
+        if not os.path.exists(path):
+            logger.error(
+                f"Input directory does not exist: {path}. Please create it or specify a different path."
+            )
+            sys.exit(1)
 
-    try:
-        # Initialize and run processor
-        logger.info("🚀 Starting Enhanced Multi-Source Processing...")
-        logger.info("=" * 50)
+    # --- Pipeline Execution ---
+    logger.info("🚀 Starting Unified Knowledge Base Build Process...")
+    logger.info("=" * 60)
 
-        processor = UnifiedProcessor(
-            input_dir=str(input_path),
-            output_dir=str(output_path),
-            min_chunk_size=args.min_chunk_size,
-            max_chunk_size=args.max_chunk_size,
-            generate_embeddings=not args.no_embeddings,
-            chroma_dir=args.chroma_dir,
-            collection_name=args.collection_name
+    if not args.no_delete:
+        delete_existing_database(args.chroma_dir)
+    else:
+        logger.warning(
+            f"Flag --no-delete is set. Appending to existing DB at {args.chroma_dir}"
         )
 
-        # Process files
-        build_chromadb = args.chroma_dir is not None
-        stats = processor.process(output_format=args.format, build_chromadb=build_chromadb)
+    dswiki_output_dir = os.path.join(args.output_dir, "dswiki")
+    openbis_output_dir = os.path.join(args.output_dir, "openbis")
+    os.makedirs(dswiki_output_dir, exist_ok=True)
+    os.makedirs(openbis_output_dir, exist_ok=True)
 
-        # Print results
-        logger.info("✅ Processing completed!")
-        logger.info("=" * 50)
-        logger.info(f"Files processed: {stats['files_processed']}")
-        logger.info(f"Total chunks: {stats['total_chunks']}")
-        logger.info(f"Sources: {stats.get('sources', 'N/A')}")
-        logger.info(f"Embeddings generated: {stats.get('embeddings_generated', 0)}")
-        if build_chromadb:
-            logger.info(f"ChromaDB built: {stats.get('chromadb_built', False)}")
+    try:
+        # Step 1: Run the DSWiki processor
+        run_dswiki_processing(
+            root_directory=args.dswiki_input,
+            output_directory=dswiki_output_dir,
+            chroma_persist_directory=args.chroma_dir,
+        )
 
-        # Print output files
-        output_files = list(output_path.glob("enhanced_chunks.*"))
-        if output_files:
-            logger.info("Output files:")
-            for file in output_files:
-                size_mb = file.stat().st_size / (1024 * 1024)
-                logger.info(f"  {file.name} ({size_mb:.1f} MB)")
+        # Step 2: Run the openBIS processor
+        run_openbis_processing(
+            root_directory=args.openbis_input,
+            output_directory=openbis_output_dir,
+            chroma_persist_directory=args.chroma_dir,
+        )
 
-        logger.info(f"Output directory: {output_path}")
-
-        if build_chromadb and stats.get('chromadb_built'):
-            logger.info(f"ChromaDB collection '{args.collection_name}' created in: {args.chroma_dir}")
-            logger.info("Ready for RAG queries!")
-
-        logger.info("=" * 50)
+        logger.info("\n" + "=" * 60)
+        logger.info(
+            "✅ All processors completed successfully. Knowledge base is rebuilt and up to date."
+        )
+        logger.info(f"Final vector store is located at: {args.chroma_dir}")
 
     except Exception as e:
-        logger.error(f"Processing failed: {e}")
-        if args.verbose:
-            import traceback
-            traceback.print_exc()
+        logger.error(
+            f"A critical error occurred during the pipeline: {e}", exc_info=args.verbose
+        )
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -1,0 +1,75 @@
+name: CI Pipeline (Test, Lint, Format, Coverage)
+
+on: [push, pull_request]
+
+# Set default permissions for the GITHUB_TOKEN.
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  # Job to run linting and formatting checks with Ruff
+  lint-and-format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Ruff
+        run: pip install ruff
+
+      - name: Run Ruff Linter
+        run: ruff check src tests
+
+      - name: Run Ruff Formatter Check
+        run: ruff format --check src tests
+
+  # Job to run tests across multiple Python versions and report coverage
+  test-and-coverage:
+    # This job should run after the linter passes
+    needs: lint-and-format
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Test on a matrix of Python versions for broader compatibility
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # This command reads pyproject.toml and installs the project
+          # and all dependencies from the [dev] group.
+          pip install -e '.[dev]'
+
+      - name: Run tests with pytest and generate coverage report
+        run: |
+          # --cov=... : Specifies which directories to measure coverage for.
+          # --cov-report=xml : Creates the coverage.xml file needed by Coveralls.
+          pytest --cov=src/desi/processor --cov-report=xml
+
+      # This step will only run on the Python 3.12 job to avoid uploading
+      # coverage from multiple jobs in the matrix.
+      - name: Upload coverage reports to Coveralls
+        if: matrix.python-version == '3.12'
+        uses: coverallsapp/github-action@v2
+        with:
+          # The GITHUB_TOKEN is automatically provided by GitHub Actions.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # The file path must match the output from the pytest command.
+          file: ./coverage.xml

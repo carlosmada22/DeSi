@@ -7,12 +7,12 @@ from bs4 import BeautifulSoup
 from markdownify import markdownify as md  # Import the markdownify library
 
 
-def scrape_and_find_links(base_url, output_dir):
+def scrape_and_find_links(base_url, output_dir, initial_urls=None):
     """
     Crawls a readthedocs site, converts the main content of each page
     to Markdown, and saves it to .md files.
     """
-    to_visit = {base_url}
+    to_visit = initial_urls if initial_urls is not None else {base_url}
     visited = set()
 
     if not os.path.exists(output_dir):
