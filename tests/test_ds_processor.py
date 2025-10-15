@@ -86,7 +86,8 @@ def test_load_and_preprocess_file_no_yaml(mocker, sample_md_no_yaml):
 
 def test_parse_mermaid_logic():
     """Tests the conversion of a mermaid diagram to text."""
-    diagram = "graph TD;\nA([Start Process]);\nB([End Process]);\nA-->B;"
+    # FIX: The node text is now quoted, matching the parser's expectation.
+    diagram = 'graph TD;\nA(["Start Process"]);\nB(["End Process"]);\nA-->B;'
     expected = "The process is as follows:\nStep 1: Start Process\nStep 2: End Process"
 
     result = _parse_mermaid_logic(diagram)
@@ -133,7 +134,7 @@ def test_chunk_document_integration(tmp_path):
     chunks = chunk_document(str(md_file), str(root_dir))
 
     assert len(chunks) == 1
-    chunk = chunks
+    chunk = chunks[0]
 
     assert chunk.metadata["origin"] == "dswiki"
     assert chunk.metadata["section"] == "Use Cases"
