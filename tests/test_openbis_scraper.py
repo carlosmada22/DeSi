@@ -99,8 +99,6 @@ def test_scrape_single_page_success(mock_requests_get, tmp_path):
     Tests that the scraper can download and correctly save a single page.
     """
     base_url = "https://openbis.readthedocs.io/en/20.10.0-11/"
-    # Only provide the home page URL to scrape
-    to_visit = {base_url}
 
     # Run the scraper on the temporary directory provided by pytest
     with patch("time.sleep", return_value=None):  # Mock sleep to speed up test
