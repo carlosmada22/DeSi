@@ -30,6 +30,7 @@ dependencies = [
     "markdownify",
     "langchain-core",
     "langchain-ollama",
+    "langchain_community",
     "langgraph",
     "langgraph.checkpoint.sqlite",
     "python-dotenv",
