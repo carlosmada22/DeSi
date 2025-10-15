@@ -167,6 +167,10 @@ class ContentChunker:
         if current_chunk and len(current_chunk) >= self.min_chunk_size:
             chunks.append(current_chunk.strip())
 
+        # If no chunks were created but there was content, return the whole content as one chunk.
+        if not chunks and content:
+            return [content.strip()]
+
         return chunks
 
 

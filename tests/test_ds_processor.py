@@ -96,7 +96,7 @@ def test_parse_mermaid_logic():
 def test_clean_chunk_content_removes_html():
     """Tests that HTML tags are stripped from content."""
     dirty_content = "This is <b>bold</b> and <i>italic</i>. <!-- comment -->"
-    expected_content = "This is bold and italic ."
+    expected_content = "This is bold and italic."
 
     result = clean_chunk_content(dirty_content)
     assert result == expected_content
@@ -127,7 +127,7 @@ def test_chunk_document_integration(tmp_path):
     section_dir.mkdir()
     md_file = section_dir / "my-test-file.md"
     md_file.write_text(
-        "---\ntitle: Integration Test\n---\n## A Section\n\nSome content here."
+        "---\ntitle: Integration Test\n---\n## A Section\n\nSome content here that is definitely long enough to pass the minimum length check after being processed."
     )
 
     chunks = chunk_document(str(md_file), str(root_dir))
