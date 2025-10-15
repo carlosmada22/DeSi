@@ -1,19 +1,19 @@
 """
-Enhanced RAG Processor for Multi-Source Documentation
+Unified RAG Processor for Multi-Source Documentation
 
-This package provides enhanced processing capabilities for documentation
-scraped from multiple sources (OpenBIS ReadTheDocs, Wiki.js DataStore).
-It normalizes content formats and applies intelligent chunking strategies.
+This package provides a complete pipeline for processing documentation from
+multiple sources (e.g., DSWiki, openBIS). It includes specialized processors
+for each source and a master CLI to orchestrate the entire workflow.
 """
 
-from .content_normalizer import ContentNormalizer
-from .enhanced_chunker import EnhancedChunker
-from .metadata_handler import MetadataHandler
-from .unified_processor import UnifiedProcessor
+# Import the main processing function from each specialized processor
+# Import the shared data structure, as it's a core concept of the package
+from .ds_processor import Document, run_dswiki_processing
+from .openbis_processor import run_openbis_processing
 
+# Define the public API of the 'processor' package
 __all__ = [
-    'ContentNormalizer',
-    'EnhancedChunker', 
-    'MetadataHandler',
-    'UnifiedProcessor'
+    "run_dswiki_processing",
+    "run_openbis_processing",
+    "Document",
 ]
