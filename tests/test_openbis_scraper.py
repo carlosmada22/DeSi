@@ -154,13 +154,10 @@ def test_handles_request_exception_gracefully(mock_requests_get, tmp_path):
     Tests that a network error on one page does not stop the entire process.
     """
     base_url = "https://openbis.readthedocs.io/en/20.10.0-11/"
+    error_urls = {base_url, "https://openbis.readthedocs.io/en/20.10.0-11/error.html"}
     # Manually add the error URL to the list of pages to visit
-    with patch(
-        "builtins.set",
-        new={base_url, "https://openbis.readthedocs.io/en/20.10.0-11/error.html"},
-    ):
-        with patch("time.sleep", return_value=None):
-            scrape_and_find_links(base_url, str(tmp_path))
+    with patch("time.sleep", return_value=None):
+        scrape_and_find_links(base_url, str(tmp_path), initial_urls=error_urls)
 
     # The scraper should log an error but continue.
     # The successful page should exist, but the error page should not.
@@ -172,12 +169,13 @@ def test_handles_page_without_main_content(mock_requests_get, tmp_path):
     """
     Tests that no file is created for a page that lacks the main content div.
     """
+    base_url = "https://openbis.readthedocs.io/en/20.10.0-11/"
     url_no_main = "https://openbis.readthedocs.io/en/20.10.0-11/no-main.html"
+    # FIX: Pass the URL directly to the function.
+    no_main_urls = {url_no_main}
 
-    with patch("builtins.set", new={url_no_main}):
-        with patch("time.sleep", return_value=None):
-            scrape_and_find_links(url_no_main, str(tmp_path))
+    with patch("time.sleep", return_value=None):
+        scrape_and_find_links(base_url, str(tmp_path), initial_urls=no_main_urls)
 
-    # The output directory should be empty because the page had no <div role="main">
-    # list(tmp_path.iterdir()) will get all files/dirs in the temp path
+    # Assertions are unchanged
     assert len(list(tmp_path.iterdir())) == 0

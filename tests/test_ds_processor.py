@@ -133,11 +133,15 @@ def test_chunk_document_integration(tmp_path):
     chunks = chunk_document(str(md_file), str(root_dir))
 
     assert len(chunks) == 1
-    chunk = chunks[0]
+    chunk = chunks
 
     assert chunk.metadata["origin"] == "dswiki"
     assert chunk.metadata["section"] == "Use Cases"
     assert chunk.metadata["source"] == "use_cases/my-test-file.md"
-    assert chunk.metadata["id"].startswith("dswiki-use_cases-my-test-file-")
-    assert "Integration Test" in chunk.metadata["title"]
+
+    assert chunk.metadata["id"] == "dswiki-use_cases-my-test-file-0"
+
+    assert (
+        "Integration Test" in chunk.metadata["title"]
+    )  # Assuming title is added in metadata
     assert "Some content here" in chunk.page_content

@@ -45,7 +45,9 @@ def _parse_mermaid_logic(diagram_text):
     try:
         # 1. Pre-clean the diagram text
         cleaned_text = diagram_text.replace("&gt;", ">")
-        cleaned_text = re.sub(r"(?m)^\s*(%%|classDef|class|```).*$", "", cleaned_text)
+        cleaned_text = re.sub(
+            r"(?m)^\s*(%%|classDef|class|```|graph).*$", "", cleaned_text
+        )
 
         # 2. Most robust regex to capture all node content
         nodes = re.findall(
