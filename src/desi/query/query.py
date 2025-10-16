@@ -52,6 +52,7 @@ class RAGQueryEngine:
         chroma_persist_directory: str,
         embedding_model: str = "nomic-embed-text",
         llm_model: str = "gpt-oss",
+        dswiki_boost: float = 0.15,  # --- NEW: Tunable boost parameter ---
     ):
         """
         Initializes the RAG query engine.
@@ -63,10 +64,13 @@ class RAGQueryEngine:
                                    generating embeddings.
             llm_model (str): The name of the Ollama model to use for generating
                              answers.
+            dswiki_boost (float): A value to add to the relevance score of chunks
+                                  from 'dswiki' to prioritize them.
         """
         self.chroma_persist_directory = chroma_persist_directory
         self.embedding_model_name = embedding_model
         self.llm_model_name = llm_model
+        self.dswiki_boost = dswiki_boost  # --- NEW: Store boost value ---
 
         if not OLLAMA_AVAILABLE:
             logger.error("Cannot initialize RAGQueryEngine: Ollama is not available.")
@@ -98,7 +102,8 @@ class RAGQueryEngine:
 
     def retrieve_relevant_chunks(self, query: str, top_k: int = 5) -> List[Document]:
         """
-        Retrieves the most relevant document chunks for a given query from ChromaDB.
+        Retrieves the most relevant document chunks for a given query from ChromaDB,
+        applying a score boost to chunks from the 'dswiki' origin.
 
         Args:
             query (str): The user's query.
@@ -112,31 +117,60 @@ class RAGQueryEngine:
             logger.warning("Vector store is not available. Cannot retrieve chunks.")
             return []
 
-        logger.info(f"Performing similarity search for top {top_k} chunks...")
+        # --- MODIFICATION START: Principled Score Boosting ---
+        # 1. Fetch a larger candidate pool along with their relevance scores.
+        #    Note: similarity_search_with_relevance_scores returns scores where
+        #    *higher is better*.
+        candidate_pool_size = top_k * 4
+        logger.info(
+            f"Fetching candidate pool of {candidate_pool_size} chunks with scores..."
+        )
         try:
-            results = self.vector_store.similarity_search(query, k=top_k)
-            logger.info(f"Found {len(results)} relevant chunks.")
-            return results
+            # This method returns a list of (Document, score) tuples
+            initial_results_with_scores = (
+                self.vector_store.similarity_search_with_relevance_scores(
+                    query, k=candidate_pool_size
+                )
+            )
         except Exception as e:
             logger.error(f"An error occurred during similarity search: {e}")
             return []
 
+        # 2. Calculate an adjusted score for each document based on metadata.
+        reranked_results = []
+        for doc, score in initial_results_with_scores:
+            adjusted_score = score
+            if doc.metadata.get("origin") == "dswiki":
+                adjusted_score += self.dswiki_boost
+                logger.debug(
+                    f"Boosting dswiki doc '{doc.metadata.get('source')}'. Original: {score:.4f}, Boosted: {adjusted_score:.4f}"
+                )
+
+            reranked_results.append((doc, adjusted_score))
+
+        # 3. Sort the entire pool based on the new, adjusted score in descending order.
+        reranked_results.sort(key=lambda x: x[1], reverse=True)
+
+        # 4. Extract just the documents from the sorted list and return the top_k.
+        final_docs = [doc for doc, score in reranked_results[:top_k]]
+        logger.info(
+            f"Found {len(initial_results_with_scores)} candidates. Returning {len(final_docs)} re-ranked chunks."
+        )
+
+        return final_docs
+        # --- MODIFICATION END ---
+
     def _create_prompt(self, query: str, relevant_chunks: List[Document]) -> str:
         """
         Creates a detailed prompt for the LLM, including the query and context.
-
-        Args:
-            query (str): The user's query.
-            relevant_chunks (List[Document]): The context chunks retrieved from the
-                                               vector store.
-
-        Returns:
-            str: The fully formatted prompt for the LLM.
         """
         context_str = ""
         for i, chunk in enumerate(relevant_chunks, 1):
             source = chunk.metadata.get("source", "Unknown")
-            context_str += f"--- Context Chunk {i} (Source: {source}) ---\n"
+            origin = chunk.metadata.get("origin", "Unknown")
+            context_str += (
+                f"--- Context Chunk {i} (Origin: {origin}, Source: {source}) ---\n"
+            )
             context_str += chunk.page_content
             context_str += "\n--------------------------------------------\n\n"
 
@@ -164,13 +198,6 @@ Answer:
     def generate_answer(self, query: str, relevant_chunks: List[Document]) -> str:
         """
         Generates an answer using the LLM based on the query and relevant chunks.
-
-        Args:
-            query (str): The user's query.
-            relevant_chunks (List[Document]): The context to be used for the answer.
-
-        Returns:
-            str: The LLM-generated answer.
         """
         if not self.llm:
             return "The Language Model is not available. Cannot generate an answer."
@@ -190,22 +217,13 @@ Answer:
     def query(self, query: str, top_k: int = 5) -> Tuple[str, List[Document]]:
         """
         Executes the full RAG pipeline for a given query.
-
-        Args:
-            query (str): The user's question.
-            top_k (int): The number of documents to retrieve for context.
-
-        Returns:
-            Tuple[str, List[Document]]: A tuple containing the generated answer
-                                         and the list of source documents used
-                                         as context.
         """
         if not OLLAMA_AVAILABLE or not self.vector_store or not self.llm:
             error_message = "Cannot process query because a required component (Ollama, Vector Store, or LLM) is not available."
             logger.error(error_message)
             return error_message, []
 
-        # Step 1: Retrieve relevant chunks from the vector database
+        # Step 1: Retrieve relevant chunks from the vector database (with score boosting)
         relevant_chunks = self.retrieve_relevant_chunks(query, top_k=top_k)
 
         # Step 2: Generate an answer using the retrieved context
@@ -216,13 +234,19 @@ Answer:
 
 if __name__ == "__main__":
     # --- Standalone Execution Example ---
-    # This demonstrates how to use the RAGQueryEngine.
-    # It assumes the ChromaDB is located in the specified directory.
-
     CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
+    # --- NEW: Define the boost value when initializing the engine ---
+    # A value of 0.1 to 0.2 is often a good starting point.
+    # It's large enough to break ties but not so large that it completely
+    # overrides semantic relevance.
+    DSWIKI_BOOST_VALUE = 0.15
 
     print("--- RAG Query Engine Initializing ---")
-    query_engine = RAGQueryEngine(chroma_persist_directory=CHROMA_PERSIST_DIRECTORY)
+    query_engine = RAGQueryEngine(
+        chroma_persist_directory=CHROMA_PERSIST_DIRECTORY,
+        dswiki_boost=DSWIKI_BOOST_VALUE,
+    )
+    print(f"-> Prioritizing 'dswiki' source with a score boost of {DSWIKI_BOOST_VALUE}")
     print("-------------------------------------\n")
 
     if OLLAMA_AVAILABLE and query_engine.vector_store and query_engine.llm:
@@ -244,10 +268,11 @@ if __name__ == "__main__":
                 # Print the results
                 print("\n--- Answer ---\n")
                 print(final_answer)
-                print("\n--- Sources Used ---\n")
+                print("\n--- Sources Used (Re-ranked with Score Boosting) ---\n")
                 for doc in source_chunks:
+                    origin = doc.metadata.get("origin", "N/A")
                     source = doc.metadata.get("source", "N/A")
-                    print(f"- Source: {source}")
+                    print(f"- Origin: {origin}, Source: {source}")
                 print("\n" + "=" * 50 + "\n")
 
             except KeyboardInterrupt:
