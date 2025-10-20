@@ -262,6 +262,7 @@ def create_and_persist_vectordb(chunks: List[Document], persist_directory: str):
         documents=filtered_chunks,
         embedding=embedding_model,
         persist_directory=persist_directory,
+        collection_metadata={"hnsw:space": "cosine"},  # cosine distance.
     )
     logger.info("-> Vector database processing complete.")
 

@@ -126,7 +126,7 @@ class RAGQueryEngine:
         try:
             # This method returns a list of (Document, score) tuples
             initial_results_with_scores = (
-                self.vector_store.similarity_search_with_score(
+                self.vector_store.similarity_search_with_relevance_scores(
                     query, k=candidate_pool_size
                 )
             )
@@ -139,7 +139,7 @@ class RAGQueryEngine:
         for doc, score in initial_results_with_scores:
             adjusted_score = score
             if doc.metadata.get("origin") == "dswiki":
-                adjusted_score -= self.dswiki_boost
+                adjusted_score += self.dswiki_boost
                 logger.debug(
                     f"Boosting dswiki doc '{doc.metadata.get('source')}'. Original: {score:.4f}, Boosted: {adjusted_score:.4f}"
                 )
@@ -147,7 +147,7 @@ class RAGQueryEngine:
             reranked_results.append((doc, adjusted_score))
 
         # 3. Sort the entire pool based on the new, adjusted score in ascending order (lower is better).
-        reranked_results.sort(key=lambda x: x[1], reverse=False)
+        reranked_results.sort(key=lambda x: x[1], reverse=True)
 
         # 4. Extract just the documents from the sorted list and return the top_k.
         final_docs = [doc for doc, score in reranked_results[:top_k]]
@@ -243,7 +243,7 @@ if __name__ == "__main__":
     CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
     # A value of 25.0 provides a significant but not absolute boost for L2 distance.
     # This value may need tuning depending on the embedding model.
-    DSWIKI_BOOST_VALUE = 25.0
+    DSWIKI_BOOST_VALUE = 0.15
 
     print("--- RAG Query Engine Initializing ---")
     query_engine = RAGQueryEngine(

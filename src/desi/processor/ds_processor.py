@@ -346,7 +346,6 @@ def create_and_persist_vectordb(chunks, persist_directory):
         print("No chunks to process. Vector database will not be created.")
         return
 
-    # --- FIX: Filter metadata to remove complex types before sending to Chroma ---
     # This will convert datetime objects to strings and remove other unsupported types.
     filtered_chunks = filter_complex_metadata(chunks)
 
@@ -358,9 +357,10 @@ def create_and_persist_vectordb(chunks, persist_directory):
     print(f"This may take a while, embedding {len(filtered_chunks)} chunks...")
 
     Chroma.from_documents(
-        documents=filtered_chunks,  # <-- Use the filtered chunks
+        documents=filtered_chunks,
         embedding=embedding_model,
         persist_directory=persist_directory,
+        collection_metadata={"hnsw:space": "cosine"},  # cosine distance.
     )
 
     print("-> Vector database created and saved successfully.")
