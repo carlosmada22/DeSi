@@ -1,460 +1,302 @@
 ﻿#!/usr/bin/env python3
 """
-RAG Query Engine for DeSi
+RAG Query Engine
 
-This module coordinates query embedding, similarity search, and prompt construction
-on top of the ChromaDB vector database produced by the unified document processor.
+This module provides the core functionality for querying the vector database
+and generating answers using a Retrieval-Augmented Generation (RAG) pipeline.
+It connects to a persistent ChromaDB vector store and uses Ollama for both
+embedding and language model generation.
 """
 
 import logging
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import List, Tuple
 
-import numpy as np
+from langchain_community.chat_models import ChatOllama
+from langchain_community.embeddings import OllamaEmbeddings
+from langchain_community.vectorstores import Chroma
 
-from ..utils.vector_db import DesiVectorDB
+# We import the Document class for type hinting, as Chroma returns this type
+from langchain_core.documents import Document
 
+# --- Basic Configuration ---
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
+
+# --- OLLAMA AVAILABILITY CHECK ---
+# A check to ensure the Ollama server is running before attempting to use it.
 try:
-    from langchain_ollama import ChatOllama, OllamaEmbeddings  # type: ignore
-
-    _OLLAMA_MODULE_AVAILABLE = True
-except ImportError:
-    ChatOllama = None  # type: ignore
-    OllamaEmbeddings = None  # type: ignore
-    _OLLAMA_MODULE_AVAILABLE = False
-    logger.warning("Langchain Ollama package not available.")
-
-DATASTORE_SOURCES = {"datastore", "wikijs"}
-DEFAULT_TOP_K = 5
-DEFAULT_EMBED_DIM = 768
+    # Attempt to initialize the embedding model
+    OllamaEmbeddings(model="nomic-embed-text")
+    OLLAMA_AVAILABLE = True
+    logger.info("Ollama server connection successful.")
+except Exception as e:
+    logger.warning(
+        f"Could not connect to Ollama server. "
+        f"Please ensure Ollama is running. Error: {e}"
+    )
+    OLLAMA_AVAILABLE = False
 
 
-class DesiRAGQueryEngine:
-    """RAG Query Engine for DeSi using ChromaDB vector database."""
+class RAGQueryEngine:
+    """
+    Manages the entire RAG pipeline from query to answer.
+    """
 
     def __init__(
         self,
-        db_path: str = "desi_vectordb",
-        collection_name: str = "desi_docs",
-        model: str = "gpt-oss:20b",
+        chroma_persist_directory: str,
+        embedding_model: str = "nomic-embed-text",
+        llm_model: str = "qwen3",
+        dswiki_boost: float = 0.15,  # --- NEW: Tunable boost parameter ---
     ):
         """
-        Initialize the RAG query engine.
+        Initializes the RAG query engine.
 
         Args:
-            db_path: Path to the ChromaDB database directory.
-            collection_name: Name of the ChromaDB collection.
-            model: The Ollama model to use for chat.
+            chroma_persist_directory (str): The directory where the ChromaDB
+                                            vector store is persisted.
+            embedding_model (str): The name of the Ollama model to use for
+                                   generating embeddings.
+            llm_model (str): The name of the Ollama model to use for generating
+                             answers.
+            dswiki_boost (float): A value to add to the relevance score of chunks
+                                  from 'dswiki' to prioritize them.
         """
-        self.db_path = db_path
-        self.collection_name = collection_name
-        self.model = model
+        self.chroma_persist_directory = chroma_persist_directory
+        self.embedding_model_name = embedding_model
+        self.llm_model_name = llm_model
+        self.dswiki_boost = dswiki_boost  # --- NEW: Store boost value ---
 
-        self.vector_db = DesiVectorDB(
-            db_path=db_path,
-            collection_name=collection_name,
-        )
-
-        self.embedding_dimension = DEFAULT_EMBED_DIM
-        self.embeddings_model = None
-        self.llm = None
-        self.ollama_available = False
-        self.original_answer: Optional[str] = None
-        self.last_prompt: Optional[str] = None
-        self.last_retrieved_chunks: List[Dict] = []
-
-        self._configure_embedding_dimension()
-        self._configure_ollama_clients()
-
-    def _configure_embedding_dimension(self) -> None:
-        """Infer embedding dimension from the existing collection when possible."""
-        try:
-            sample = self.vector_db.collection.get(limit=1, include=["embeddings"])
-            embeddings = sample.get("embeddings")
-            if embeddings and embeddings[0]:
-                self.embedding_dimension = len(embeddings[0])
-                logger.debug(
-                    "Detected embedding dimension from collection: %s",
-                    self.embedding_dimension,
-                )
-        except Exception as exc:
-            logger.debug("Could not infer embedding dimension: %s", exc)
-
-    def _configure_ollama_clients(self) -> None:
-        """Initialise Ollama embedding and chat clients if available."""
-        if not _OLLAMA_MODULE_AVAILABLE:
-            logger.info("Ollama integrations disabled; running in fallback mode.")
+        if not OLLAMA_AVAILABLE:
+            logger.error("Cannot initialize RAGQueryEngine: Ollama is not available.")
+            self.vector_store = None
+            self.llm = None
             return
 
+        logger.info("Initializing embedding model and vector store...")
         try:
-            self.embeddings_model = OllamaEmbeddings(model="nomic-embed-text")  # type: ignore[operator]
-            probe_vector = self.embeddings_model.embed_query("dimension probe")  # type: ignore[union-attr]
-            if probe_vector:
-                self.embedding_dimension = len(probe_vector)
-            self.llm = ChatOllama(model=self.model)  # type: ignore[operator]
-            self.ollama_available = True
-            logger.info(
-                "Using Ollama for embeddings and completions (dimension=%s).",
-                self.embedding_dimension,
+            self.embedding_model = OllamaEmbeddings(model=self.embedding_model_name)
+            self.vector_store = Chroma(
+                persist_directory=self.chroma_persist_directory,
+                embedding_function=self.embedding_model,
             )
-        except Exception as exc:
-            logger.warning("Ollama not available or not running: %s", exc)
-            self.embeddings_model = None
+            logger.info("Vector store loaded successfully.")
+        except Exception as e:
+            logger.error(
+                f"Failed to load vector store from '{chroma_persist_directory}'. Error: {e}"
+            )
+            self.vector_store = None
+
+        logger.info("Initializing Large Language Model...")
+        try:
+            self.llm = ChatOllama(model=self.llm_model_name)
+            logger.info(f"LLM '{self.llm_model_name}' initialized.")
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM. Error: {e}")
             self.llm = None
-            self.ollama_available = False
 
-    def generate_embedding(self, text: str) -> List[float]:
-        """Generate an embedding for a piece of text."""
-        if self.embeddings_model:
-            try:
-                embedding = self.embeddings_model.embed_query(text)  # type: ignore[union-attr]
-                if embedding:
-                    self.embedding_dimension = len(embedding)
-                return embedding
-            except Exception as exc:
-                logger.error("Error generating embedding with Ollama: %s", exc)
-                logger.warning("Falling back to dummy embedding.")
-
-        return self._generate_dummy_embedding()
-
-    def _generate_dummy_embedding(self, dim: Optional[int] = None) -> List[float]:
-        """Generate a dummy embedding (normalised random vector)."""
-        dimension = dim or self.embedding_dimension or DEFAULT_EMBED_DIM
-        vector = np.random.normal(0, 1, dimension)
-        norm = np.linalg.norm(vector)
-        if not norm:
-            return [0.0] * dimension
-        return (vector / norm).tolist()
-
-    def _normalize_chunk(self, raw_chunk: Dict) -> Dict:
-        """Normalise raw search results into a consistent structure."""
-        chunk = dict(raw_chunk) if raw_chunk else {}
-
-        document_id = str(
-            chunk.get("chunk_id")
-            or chunk.get("id")
-            or chunk.get("document_id")
-            or chunk.get("path")
-            or chunk.get("title")
-            or f"chunk-{len(self.last_retrieved_chunks)}"
-        )
-
-        source = (chunk.get("source") or chunk.get("repo") or "unknown").lower()
-        title = (
-            chunk.get("title")
-            or chunk.get("chunk_title")
-            or chunk.get("section")
-            or "Untitled"
-        )
-        section = chunk.get("section") or chunk.get("section_title") or ""
-        path = chunk.get("path") or chunk.get("file_path") or ""
-        content = (
-            chunk.get("content") or chunk.get("document") or chunk.get("text") or ""
-        )
-
-        try:
-            similarity = float(chunk.get("similarity_score", 0.0))
-        except (TypeError, ValueError):
-            similarity = 0.0
-
-        try:
-            priority = int(chunk.get("source_priority", 99))
-        except (TypeError, ValueError):
-            priority = 99
-
-        source_label = (
-            "Data Store Wiki"
-            if source in DATASTORE_SOURCES
-            else "openBIS Documentation"
-        )
-
-        metadata = {
-            k: v for k, v in chunk.items() if k not in {"content", "similarity_score"}
-        }
-        metadata.setdefault("source", source)
-        metadata.setdefault("title", title)
-        metadata.setdefault("section", section)
-        metadata.setdefault("path", path)
-
-        return {
-            "document_id": document_id,
-            "chunk_id": chunk.get("chunk_id") or document_id,
-            "source": source,
-            "source_label": source_label,
-            "title": title,
-            "section": section,
-            "path": path,
-            "content": content,
-            "similarity_score": similarity,
-            "source_priority": priority,
-            "metadata": metadata,
-        }
-
-    def retrieve_relevant_chunks(
-        self,
-        query: str,
-        top_k: int = DEFAULT_TOP_K,
-        prioritize_datastore: bool = True,
-    ) -> List[Dict]:
+    def retrieve_relevant_chunks(self, query: str, top_k: int = 5) -> List[Document]:
         """
-        Retrieve the most relevant chunks for a query using vector similarity search.
+        Retrieves the most relevant document chunks for a given query from ChromaDB,
+        applying a score boost to chunks from the 'dswiki' origin.
 
         Args:
-            query: The query to retrieve chunks for.
-            top_k: The number of chunks to return.
-            prioritize_datastore: Whether to prioritise datastore (Wiki.js) content.
+            query (str): The user's query.
+            top_k (int): The number of top relevant chunks to retrieve.
 
         Returns:
-            A list of relevant chunks with normalised metadata.
+            List[Document]: A list of LangChain Document objects containing the
+                            retrieved content and metadata.
         """
-        if not query or not query.strip():
-            logger.debug("Empty query received; returning no chunks.")
+        if not self.vector_store:
+            logger.warning("Vector store is not available. Cannot retrieve chunks.")
             return []
 
-        candidates: Dict[str, Dict] = {}
-        query_embedding = self.generate_embedding(query)
-        search_limit = max(top_k * 2, top_k + 2)
-
-        def collect(results: List[Dict]) -> None:
-            logger.debug(f"Collecting {len(results)} raw results")
-            for raw in results:
-                normalised = self._normalize_chunk(raw)
-                doc_id = normalised["document_id"]
-                existing = candidates.get(doc_id)
-                if existing:
-                    if normalised["similarity_score"] > existing["similarity_score"]:
-                        existing["similarity_score"] = normalised["similarity_score"]
-                        existing["metadata"] = normalised["metadata"]
-                else:
-                    candidates[doc_id] = normalised
-
+        # 1. Fetch a larger candidate pool along with their relevance scores.
+        #    Note: similarity_search_with_relevance_scores returns scores where
+        #    *higher is better*.
+        candidate_pool_size = top_k * 4
+        logger.info(
+            f"Fetching candidate pool of {candidate_pool_size} chunks with scores..."
+        )
         try:
-            logger.debug(f"Starting search for query: '{query}'")
-            base_results = self.vector_db.search(
-                query_embedding=query_embedding,
-                n_results=search_limit,
+            # This method returns a list of (Document, score) tuples
+            initial_results_with_scores = (
+                self.vector_store.similarity_search_with_relevance_scores(
+                    query, k=candidate_pool_size
+                )
             )
-            logger.debug(f"Base search returned {len(base_results)} results")
-            collect(base_results)
-
-            if prioritize_datastore:
-                for source_name in DATASTORE_SOURCES:
-                    logger.debug(f"Searching with source filter: {source_name}")
-                    boosted = self.vector_db.search(
-                        query_embedding=query_embedding,
-                        n_results=top_k,
-                        source_filter=source_name,
-                    )
-                    logger.debug(
-                        f"Source-filtered search for '{source_name}' returned {len(boosted)} results"
-                    )
-                    collect(boosted)
-
-            logger.debug(f"Total candidates collected: {len(candidates)}")
-            ranked = sorted(
-                candidates.values(),
-                key=lambda item: (item["source_priority"], -item["similarity_score"]),
-            )
-
-            top_chunks = ranked[:top_k]
-            self.last_retrieved_chunks = top_chunks
-
-            distribution: Dict[str, int] = {}
-            for chunk in top_chunks:
-                distribution[chunk["source"]] = distribution.get(chunk["source"], 0) + 1
-
-            logger.info(
-                "Retrieved %d chunks for query '%s' (distribution: %s)",
-                len(top_chunks),
-                query,
-                distribution,
-            )
-            return top_chunks
-        except Exception as exc:
-            logger.error("Error retrieving relevant chunks: %s", exc)
+        except Exception as e:
+            logger.error(f"An error occurred during similarity search: {e}")
             return []
 
-    def _create_prompt(
-        self,
-        query: str,
-        relevant_chunks: List[Dict],
-        conversation_history: Optional[List[Dict]] = None,
-    ) -> str:
-        """Create a prompt for the language model using the query, context, and history."""
-        history_block = ""
-        if conversation_history:
-            formatted_history = []
-            for item in conversation_history[-6:]:
-                role = (item.get("role") or item.get("type") or "user").lower()
-                label = "User" if role == "user" else "Assistant"
-                content = item.get("content", "").strip()
-                if content:
-                    formatted_history.append(f"{label}: {content}")
-            if formatted_history:
-                history_block = (
-                    "Previous conversation:\n" + "\n".join(formatted_history) + "\n\n"
+        # 2. Calculate an adjusted score for each document based on metadata.
+        reranked_results = []
+        for doc, score in initial_results_with_scores:
+            adjusted_score = score
+            if doc.metadata.get("origin") == "dswiki":
+                adjusted_score += self.dswiki_boost
+                logger.debug(
+                    f"Boosting dswiki doc '{doc.metadata.get('source')}'. Original: {score:.4f}, Boosted: {adjusted_score:.4f}"
                 )
 
-        if relevant_chunks:
-            context_parts = []
-            for idx, chunk in enumerate(relevant_chunks, start=1):
-                lines = [
-                    f"[Context {idx} - {chunk['source_label']}]",
-                    f"Title: {chunk['title']}",
-                ]
-                if chunk.get("section"):
-                    lines.append(f"Section: {chunk['section']}")
-                if chunk.get("path"):
-                    lines.append(f"Path: {chunk['path']}")
-                lines.append("Content:")
-                lines.append(chunk.get("content", ""))
-                context_parts.append("\n".join(lines))
-            context_block = "\n\n".join(context_parts)
-        else:
-            context_block = "No documentation snippets were retrieved."
+            reranked_results.append((doc, adjusted_score))
 
-        if relevant_chunks:
-            prompt = (
-                f"{history_block}"
-                "Use the documentation context below to answer the user's question.\n"
-                "Documentation Context:\n"
-                f"{context_block}\n\n"
-                f"User Question: {query}\n\n"
-                "Instructions:\n"
-                "- Provide clear, actionable guidance grounded in the context.\n"
-                "- Cite relevant sections briefly when helpful.\n"
-                "- Prioritise details from the Data Store wiki when available.\n"
-                "- Only use information from the provided context.\n"
-                "- If the context doesn't contain enough information, say so clearly.\n\n"
-                "Answer:"
+        # 3. Sort the entire pool based on the new, adjusted score in ascending order (lower is better).
+        reranked_results.sort(key=lambda x: x[1], reverse=True)
+
+        # 4. Extract just the documents from the sorted list and return the top_k.
+        final_docs = [doc for doc, score in reranked_results[:top_k]]
+        logger.info(
+            f"Found {len(initial_results_with_scores)} candidates. Returning {len(final_docs)} re-ranked chunks."
+        )
+
+        return final_docs
+
+    def _create_prompt(self, query: str, relevant_chunks: List[Document]) -> str:
+        """
+        Creates a detailed prompt for the LLM, including the query and context.
+        """
+        context_str = ""
+        for i, chunk in enumerate(relevant_chunks, 1):
+            source = chunk.metadata.get("source", "Unknown")
+            origin = chunk.metadata.get("origin", "Unknown")
+            context_str += (
+                f"--- Context Chunk {i} (Origin: {origin}, Source: {source}) ---\n"
             )
-        else:
-            prompt = (
-                f"{history_block}"
-                f"User Question: {query}\n\n"
-                "I don't have access to relevant documentation for this question. "
-                "The vector database search didn't return any matching content. "
-                "Please try rephrasing your question or contact the system administrator "
-                "if you believe this information should be available.\n\n"
-                "Answer: I don't have information about that topic in my current knowledge base."
-            )
+            context_str += chunk.page_content
+            context_str += "\n--------------------------------------------\n\n"
+
+        prompt = f"""
+You are an expert assistant for openBIS and DSWiki. Your goal is to provide clear, accurate, and friendly answers based ONLY on the context provided below.
+
+Follow these rules STRICTLY:
+1.  **Base your answer exclusively on the provided context.** Do not use any prior knowledge.
+2.  **Do not mention the context or the documentation in your answer.** Never say "Based on the information provided..." or similar phrases.
+3.  **Synthesize information** from all provided chunks to form a complete and coherent answer.
+4.  If the context does not contain the answer, state that you do not have enough information to answer the question. Do not try to guess.
+5.  Be conversational and helpful in your tone.
+
+--- CONTEXT ---
+{context_str}
+--- END OF CONTEXT ---
+
+Based on the context above, please provide a clear and helpful answer to the following question.
+
+Question: {query}
+Answer:
+"""
         return prompt
 
-    @staticmethod
-    def _strip_think_tags(answer: str) -> str:
-        """Remove <think> tags from Ollama responses."""
-        if not answer:
-            return ""
-        return re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
-
-    def _render_fallback_answer(
-        self,
-        query: str,
-        relevant_chunks: List[Dict],
-        error: Optional[str] = None,
-    ) -> str:
-        """Fallback response when Ollama is unavailable."""
+    def generate_answer(self, query: str, relevant_chunks: List[Document]) -> str:
+        """
+        Generates an answer using the LLM based on the query and relevant chunks.
+        """
+        if not self.llm:
+            return "The Language Model is not available. Cannot generate an answer."
         if not relevant_chunks:
-            base = "I could not find relevant documentation snippets to answer that question."
-        else:
-            bullet_lines = []
-            for chunk in relevant_chunks:
-                snippet_lines = [
-                    line.strip()
-                    for line in chunk.get("content", "").splitlines()
-                    if line.strip()
-                ]
-                snippet = " ".join(snippet_lines)[:280]
-                bullet_lines.append(
-                    f"- {chunk['source_label']} · {chunk['title']}: {snippet}"
-                )
-            base = (
-                "Ollama is unavailable, so here is a summary of the retrieved documentation:\n"
-                + "\n".join(bullet_lines)
-            )
+            return "I do not have enough information to answer that question."
 
-        if error:
-            base += f"\n\n(Generation fallback triggered due to: {error})"
-        return base
-
-    def generate_answer(
-        self,
-        query: str,
-        relevant_chunks: List[Dict],
-        conversation_history: Optional[List[Dict]] = None,
-    ) -> str:
-        """
-        Generate an answer for a query using the relevant chunks.
-
-        Args:
-            query: The query to answer.
-            relevant_chunks: Retrieved context chunks.
-            conversation_history: Optional conversation history for additional context.
-
-        Returns:
-            The generated answer.
-        """
-        if not self.ollama_available or not self.llm:
-            return self._render_fallback_answer(query, relevant_chunks)
+        prompt = self._create_prompt(query, relevant_chunks)
+        logger.info("Generating answer with LLM...")
 
         try:
-            prompt = self._create_prompt(query, relevant_chunks, conversation_history)
-            self.last_prompt = prompt
+            response = self.llm.invoke(prompt)
+            raw_answer = response.content
 
-            system_instruction = (
-                "You are DeSi, a knowledgeable assistant specialising in openBIS and data store operations.\n"
-                "IMPORTANT: Only use information from the provided documentation context. "
-                "Do not make up or invent information. If the context doesn't contain "
-                "the answer, clearly state that you don't have that information.\n"
-                "Respond in clear, friendly language and ground each answer in the provided documentation.\n"
-                "Prioritise Data Store wiki information when it is present."
+            # This regex finds the <think>...</think> block (including multi-line content)
+            # and replaces it with an empty string. It will not error if the block is not found.
+            cleaned_answer = re.sub(
+                r"<think>.*?</think>", "", raw_answer, flags=re.DOTALL
             )
 
-            full_prompt = system_instruction + "\n\n" + prompt
-            response = self.llm.invoke(full_prompt)  # type: ignore[union-attr]
+            return cleaned_answer.strip()
 
-            answer_text = (
-                response.content if hasattr(response, "content") else str(response)
-            )
-            self.original_answer = answer_text
+        except Exception as e:
+            logger.error(f"An error occurred while generating the answer: {e}")
+            return "There was an error generating the answer."
 
-            cleaned = self._strip_think_tags(answer_text)
-            return cleaned
-        except Exception as exc:
-            logger.error("Error generating answer with Ollama: %s", exc)
-            return self._render_fallback_answer(query, relevant_chunks, error=str(exc))
-
-    def query(
-        self,
-        query: str,
-        top_k: int = DEFAULT_TOP_K,
-        conversation_history: Optional[List[Dict]] = None,
-    ) -> Tuple[str, List[Dict]]:
+    def query(self, query: str, top_k: int = 5) -> Tuple[str, List[Document]]:
         """
-        Query the vector database using RAG.
-
-        Args:
-            query: The query to answer.
-            top_k: The number of chunks to retrieve.
-            conversation_history: Optional conversation history to include.
-
-        Returns:
-            A tuple containing the answer and the relevant chunks.
+        Executes the full RAG pipeline for a given query.
         """
+        if not OLLAMA_AVAILABLE or not self.vector_store or not self.llm:
+            error_message = "Cannot process query because a required component (Ollama, Vector Store, or LLM) is not available."
+            logger.error(error_message)
+            return error_message, []
+
+        # Step 1: Retrieve relevant chunks from the vector database (with score boosting)
         relevant_chunks = self.retrieve_relevant_chunks(query, top_k=top_k)
-        answer = self.generate_answer(
-            query,
-            relevant_chunks,
-            conversation_history=conversation_history,
-        )
+
+        # Step 2: Generate an answer using the retrieved context
+        answer = self.generate_answer(query, relevant_chunks)
+
         return answer, relevant_chunks
 
-    def get_database_stats(self) -> Dict:
-        """Get statistics about the vector database."""
-        return self.vector_db.get_collection_stats()
 
-    def close(self) -> None:
-        """Close the vector database connection."""
-        self.vector_db.close()
+if __name__ == "__main__":
+    # --- Standalone Execution Example ---
+    CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
+    # A value of 25.0 provides a significant but not absolute boost for L2 distance.
+    # This value may need tuning depending on the embedding model.
+    DSWIKI_BOOST_VALUE = 0.15
+
+    print("--- RAG Query Engine Initializing ---")
+    query_engine = RAGQueryEngine(
+        chroma_persist_directory=CHROMA_PERSIST_DIRECTORY,
+        dswiki_boost=DSWIKI_BOOST_VALUE,
+    )
+    print("-------------------------------------\n")
+
+    if OLLAMA_AVAILABLE and query_engine.vector_store and query_engine.llm:
+        print("Initialization successful. You can now ask questions.")
+        print("Type 'exit' to quit the program.\n")
+
+        while True:
+            try:
+                user_query = input("Ask a question: ")
+                if user_query.lower().strip() == "exit":
+                    print("Exiting...")
+                    break
+                if not user_query.strip():
+                    continue
+
+                # Execute the RAG pipeline
+                final_answer, source_chunks = query_engine.query(user_query)
+
+                # Print the results
+                print("\n--- Answer ---\n")
+                print(final_answer)
+                print("\n--- Sources Used ---\n")
+                displayed_sources = set()
+                if not source_chunks:
+                    print("No sources were used.")
+                else:
+                    for doc in source_chunks:
+                        source = doc.metadata.get("source", "N/A")
+                        if source not in displayed_sources:
+                            # Make origin name more friendly for display
+                            raw_origin = doc.metadata.get("origin", "N/A")
+                            if raw_origin == "dswiki":
+                                display_origin = "DataStore Wiki"
+                            elif raw_origin == "openbis":
+                                display_origin = "openBIS Wiki"
+                            else:
+                                display_origin = raw_origin.title()
+
+                            print(f"- Origin: {display_origin}, Source: {source}")
+                            displayed_sources.add(source)
+
+                print("\n" + "=" * 50 + "\n")
+
+            except KeyboardInterrupt:
+                print("\nExiting...")
+                break
+    else:
+        print(
+            "Failed to initialize the RAG Query Engine. Please check the logs for errors."
+        )
