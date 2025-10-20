@@ -9,12 +9,11 @@ embedding and language model generation.
 """
 
 import logging
+import re
 from typing import List, Tuple
 
 from langchain_community.chat_models import ChatOllama
 from langchain_community.embeddings import OllamaEmbeddings
-
-# LangChain components are used for interacting with the vector store and the LLM
 from langchain_community.vectorstores import Chroma
 
 # We import the Document class for type hinting, as Chroma returns this type
@@ -51,7 +50,7 @@ class RAGQueryEngine:
         self,
         chroma_persist_directory: str,
         embedding_model: str = "nomic-embed-text",
-        llm_model: str = "gpt-oss",
+        llm_model: str = "qwen3",
         dswiki_boost: float = 0.15,  # --- NEW: Tunable boost parameter ---
     ):
         """
@@ -117,7 +116,6 @@ class RAGQueryEngine:
             logger.warning("Vector store is not available. Cannot retrieve chunks.")
             return []
 
-        # --- MODIFICATION START: Principled Score Boosting ---
         # 1. Fetch a larger candidate pool along with their relevance scores.
         #    Note: similarity_search_with_relevance_scores returns scores where
         #    *higher is better*.
@@ -128,7 +126,7 @@ class RAGQueryEngine:
         try:
             # This method returns a list of (Document, score) tuples
             initial_results_with_scores = (
-                self.vector_store.similarity_search_with_relevance_scores(
+                self.vector_store.similarity_search_with_score(
                     query, k=candidate_pool_size
                 )
             )
@@ -141,15 +139,15 @@ class RAGQueryEngine:
         for doc, score in initial_results_with_scores:
             adjusted_score = score
             if doc.metadata.get("origin") == "dswiki":
-                adjusted_score += self.dswiki_boost
+                adjusted_score -= self.dswiki_boost
                 logger.debug(
                     f"Boosting dswiki doc '{doc.metadata.get('source')}'. Original: {score:.4f}, Boosted: {adjusted_score:.4f}"
                 )
 
             reranked_results.append((doc, adjusted_score))
 
-        # 3. Sort the entire pool based on the new, adjusted score in descending order.
-        reranked_results.sort(key=lambda x: x[1], reverse=True)
+        # 3. Sort the entire pool based on the new, adjusted score in ascending order (lower is better).
+        reranked_results.sort(key=lambda x: x[1], reverse=False)
 
         # 4. Extract just the documents from the sorted list and return the top_k.
         final_docs = [doc for doc, score in reranked_results[:top_k]]
@@ -158,7 +156,6 @@ class RAGQueryEngine:
         )
 
         return final_docs
-        # --- MODIFICATION END ---
 
     def _create_prompt(self, query: str, relevant_chunks: List[Document]) -> str:
         """
@@ -209,7 +206,16 @@ Answer:
 
         try:
             response = self.llm.invoke(prompt)
-            return response.content.strip()
+            raw_answer = response.content
+
+            # This regex finds the <think>...</think> block (including multi-line content)
+            # and replaces it with an empty string. It will not error if the block is not found.
+            cleaned_answer = re.sub(
+                r"<think>.*?</think>", "", raw_answer, flags=re.DOTALL
+            )
+
+            return cleaned_answer.strip()
+
         except Exception as e:
             logger.error(f"An error occurred while generating the answer: {e}")
             return "There was an error generating the answer."
@@ -271,6 +277,13 @@ if __name__ == "__main__":
                 print("\n--- Sources Used (Re-ranked with Score Boosting) ---\n")
                 for doc in source_chunks:
                     origin = doc.metadata.get("origin", "N/A")
+                    origin = (
+                        "DataStore Wiki"
+                        if origin == "dswiki"
+                        else "openBIS Wiki"
+                        if origin == "openbis"
+                        else origin
+                    )
                     source = doc.metadata.get("source", "N/A")
                     print(f"- Origin: {origin}, Source: {source}")
                 print("\n" + "=" * 50 + "\n")
