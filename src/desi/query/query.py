@@ -241,18 +241,15 @@ Answer:
 if __name__ == "__main__":
     # --- Standalone Execution Example ---
     CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
-    # --- NEW: Define the boost value when initializing the engine ---
-    # A value of 0.1 to 0.2 is often a good starting point.
-    # It's large enough to break ties but not so large that it completely
-    # overrides semantic relevance.
-    DSWIKI_BOOST_VALUE = 0.15
+    # A value of 25.0 provides a significant but not absolute boost for L2 distance.
+    # This value may need tuning depending on the embedding model.
+    DSWIKI_BOOST_VALUE = 25.0
 
     print("--- RAG Query Engine Initializing ---")
     query_engine = RAGQueryEngine(
         chroma_persist_directory=CHROMA_PERSIST_DIRECTORY,
         dswiki_boost=DSWIKI_BOOST_VALUE,
     )
-    print(f"-> Prioritizing 'dswiki' source with a score boost of {DSWIKI_BOOST_VALUE}")
     print("-------------------------------------\n")
 
     if OLLAMA_AVAILABLE and query_engine.vector_store and query_engine.llm:
@@ -274,18 +271,26 @@ if __name__ == "__main__":
                 # Print the results
                 print("\n--- Answer ---\n")
                 print(final_answer)
-                print("\n--- Sources Used (Re-ranked with Score Boosting) ---\n")
-                for doc in source_chunks:
-                    origin = doc.metadata.get("origin", "N/A")
-                    origin = (
-                        "DataStore Wiki"
-                        if origin == "dswiki"
-                        else "openBIS Wiki"
-                        if origin == "openbis"
-                        else origin
-                    )
-                    source = doc.metadata.get("source", "N/A")
-                    print(f"- Origin: {origin}, Source: {source}")
+                print("\n--- Sources Used ---\n")
+                displayed_sources = set()
+                if not source_chunks:
+                    print("No sources were used.")
+                else:
+                    for doc in source_chunks:
+                        source = doc.metadata.get("source", "N/A")
+                        if source not in displayed_sources:
+                            # Make origin name more friendly for display
+                            raw_origin = doc.metadata.get("origin", "N/A")
+                            if raw_origin == "dswiki":
+                                display_origin = "DataStore Wiki"
+                            elif raw_origin == "openbis":
+                                display_origin = "openBIS Wiki"
+                            else:
+                                display_origin = raw_origin.title()
+
+                            print(f"- Origin: {display_origin}, Source: {source}")
+                            displayed_sources.add(source)
+
                 print("\n" + "=" * 50 + "\n")
 
             except KeyboardInterrupt:
