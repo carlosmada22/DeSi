@@ -21,14 +21,28 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Ruff
-        run: pip install ruff
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Install dev dependencies, which should include ruff and mypy
+          pip install -e '.[dev]'
 
       - name: Run Ruff Linter
         run: ruff check src tests
 
       - name: Run Ruff Formatter Check
         run: ruff format --check src tests
+
+      - name: Run MyPy
+        run: mypy src
 
   # Job to run tests across multiple Python versions and report coverage
   test-and-coverage:
@@ -49,6 +63,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: |
