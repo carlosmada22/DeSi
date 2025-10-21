@@ -49,9 +49,11 @@ class RAGQueryEngine:
     def __init__(
         self,
         chroma_persist_directory: str,
+        prompt_template_path: str,
         embedding_model: str = "nomic-embed-text",
         llm_model: str = "qwen3",
-        dswiki_boost: float = 0.15,  # --- NEW: Tunable boost parameter ---
+        dswiki_boost: float = 0.15,
+        relevance_score_threshold: float = 0.3,
     ):
         """
         Initializes the RAG query engine.
@@ -65,11 +67,16 @@ class RAGQueryEngine:
                              answers.
             dswiki_boost (float): A value to add to the relevance score of chunks
                                   from 'dswiki' to prioritize them.
+            relevance_score_threshold (float): The minimum similarity score for a chunk
+                                               to be considered relevant. Chunks with a
+                                               score *below* this are discarded.
         """
         self.chroma_persist_directory = chroma_persist_directory
         self.embedding_model_name = embedding_model
         self.llm_model_name = llm_model
-        self.dswiki_boost = dswiki_boost  # --- NEW: Store boost value ---
+        self.dswiki_boost = dswiki_boost
+        self.relevance_score_threshold = relevance_score_threshold
+        self.prompt_template = self._load_prompt_template(prompt_template_path)
 
         if not OLLAMA_AVAILABLE:
             logger.error("Cannot initialize RAGQueryEngine: Ollama is not available.")
@@ -98,6 +105,19 @@ class RAGQueryEngine:
         except Exception as e:
             logger.error(f"Failed to initialize LLM. Error: {e}")
             self.llm = None
+
+    def _load_prompt_template(self, file_path: str) -> str:
+        """Loads the prompt template from a file."""
+        logger.info(f"Loading prompt template from '{file_path}'...")
+        try:
+            with open(file_path, encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            logger.error(f"Prompt template file not found at '{file_path}'.")
+            return ""  # Return empty or raise an exception
+        except Exception as e:
+            logger.error(f"Failed to load prompt template. Error: {e}")
+            return ""
 
     def retrieve_relevant_chunks(self, query: str, top_k: int = 5) -> List[Document]:
         """
@@ -134,9 +154,27 @@ class RAGQueryEngine:
             logger.error(f"An error occurred during similarity search: {e}")
             return []
 
-        # 2. Calculate an adjusted score for each document based on metadata.
+        # 2. We keep scores ABOVE the threshold.
+        relevant_results = [
+            (doc, score)
+            for doc, score in initial_results_with_scores
+            if score >= self.relevance_score_threshold
+        ]
+        discarded_count = len(initial_results_with_scores) - len(relevant_results)
+        if discarded_count > 0:
+            logger.info(
+                f"Discarded {discarded_count} chunks below relevance threshold ({self.relevance_score_threshold})."
+            )
+
+        if not relevant_results:
+            logger.info(
+                "No chunks met the relevance threshold. Answering from persona."
+            )
+            return []
+
+        # 3. Calculate an adjusted score for each document based on metadata.
         reranked_results = []
-        for doc, score in initial_results_with_scores:
+        for doc, score in relevant_results:
             adjusted_score = score
             if doc.metadata.get("origin") == "dswiki":
                 adjusted_score += self.dswiki_boost
@@ -146,10 +184,10 @@ class RAGQueryEngine:
 
             reranked_results.append((doc, adjusted_score))
 
-        # 3. Sort the entire pool based on the new, adjusted score in ascending order (lower is better).
+        # 4. Sort the entire pool based on the new, adjusted score in ascending order (lower is better).
         reranked_results.sort(key=lambda x: x[1], reverse=True)
 
-        # 4. Extract just the documents from the sorted list and return the top_k.
+        # 5. Extract just the documents from the sorted list and return the top_k.
         final_docs = [doc for doc, score in reranked_results[:top_k]]
         logger.info(
             f"Found {len(initial_results_with_scores)} candidates. Returning {len(final_docs)} re-ranked chunks."
@@ -161,6 +199,10 @@ class RAGQueryEngine:
         """
         Creates a detailed prompt for the LLM, including the query and context.
         """
+        if not self.prompt_template:
+            logger.error("Prompt template is not loaded. Cannot create prompt.")
+            return "You are **DeSi**, a friendly and expert assistant specializing **exclusively** in the BAM Data Store Project (mainly) and openBIS (through the DSWiki and openBIS documentation). Your primary goal is to provide clear, accurate, and helpful answers to users' questions about these systems. You must be conversational, confident, and consistently knowledgeable."  # Or handle error appropriately
+
         context_str = ""
         for i, chunk in enumerate(relevant_chunks, 1):
             source = chunk.metadata.get("source", "Unknown")
@@ -171,26 +213,8 @@ class RAGQueryEngine:
             context_str += chunk.page_content
             context_str += "\n--------------------------------------------\n\n"
 
-        prompt = f"""
-You are an expert assistant for openBIS and DSWiki. Your goal is to provide clear, accurate, and friendly answers based ONLY on the context provided below.
-
-Follow these rules STRICTLY:
-1.  **Base your answer exclusively on the provided context.** Do not use any prior knowledge.
-2.  **Do not mention the context or the documentation in your answer.** Never say "Based on the information provided..." or similar phrases.
-3.  **Synthesize information** from all provided chunks to form a complete and coherent answer.
-4.  If the context does not contain the answer, state that you do not have enough information to answer the question. Do not try to guess.
-5.  Be conversational and helpful in your tone.
-
---- CONTEXT ---
-{context_str}
---- END OF CONTEXT ---
-
-Based on the context above, please provide a clear and helpful answer to the following question.
-
-Question: {query}
-Answer:
-"""
-        return prompt
+        # Format the template string
+        return self.prompt_template.format(context_str=context_str, query=query)
 
     def generate_answer(self, query: str, relevant_chunks: List[Document]) -> str:
         """
@@ -198,8 +222,8 @@ Answer:
         """
         if not self.llm:
             return "The Language Model is not available. Cannot generate an answer."
-        if not relevant_chunks:
-            return "I do not have enough information to answer that question."
+        # if not relevant_chunks:
+        #    return "I do not have enough information to answer that question."
 
         prompt = self._create_prompt(query, relevant_chunks)
         logger.info("Generating answer with LLM...")
@@ -241,14 +265,19 @@ Answer:
 if __name__ == "__main__":
     # --- Standalone Execution Example ---
     CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
-    # A value of 25.0 provides a significant but not absolute boost for L2 distance.
-    # This value may need tuning depending on the embedding model.
+    # Value for boosting dswiki chunks
     DSWIKI_BOOST_VALUE = 0.15
+    # A score of 0.3 means we discard any chunk with less than 30% similarity.
+    RELEVANCE_THRESHOLD = 0.7
+    # Path to the prompt template
+    PROMPT_TEMPLATE_PATH = "./prompts/desi_query_prompt.md"
 
     print("--- RAG Query Engine Initializing ---")
     query_engine = RAGQueryEngine(
         chroma_persist_directory=CHROMA_PERSIST_DIRECTORY,
         dswiki_boost=DSWIKI_BOOST_VALUE,
+        prompt_template_path=PROMPT_TEMPLATE_PATH,
+        relevance_score_threshold=RELEVANCE_THRESHOLD,
     )
     print("-------------------------------------\n")
 
