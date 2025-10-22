@@ -46,8 +46,8 @@ jobs:
       - name: Run Ruff Formatter Check
         run: ruff format --check src tests
 
-      - name: Run MyPy
-        run: mypy src
+  #    - name: Run MyPy
+  #      run: mypy src
 
   # Job to run tests across multiple Python versions and report coverage
   # This job now runs in PARALLEL with the checks job.

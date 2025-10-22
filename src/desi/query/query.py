@@ -10,7 +10,7 @@ embedding and language model generation.
 
 import logging
 import re
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from langchain_community.chat_models import ChatOllama
 from langchain_community.embeddings import OllamaEmbeddings
@@ -195,56 +195,71 @@ class RAGQueryEngine:
 
         return final_docs
 
-    def _create_prompt(self, query: str, relevant_chunks: List[Document]) -> str:
+    def _create_prompt(
+        self,
+        query: str,
+        relevant_chunks: List[Document],
+        conversation_history: List[Dict],
+    ) -> str:
         """
         Creates a detailed prompt for the LLM, including the query and context.
         """
         if not self.prompt_template:
             logger.error("Prompt template is not loaded. Cannot create prompt.")
-            return "You are **DeSi**, a friendly and expert assistant specializing **exclusively** in the BAM Data Store Project (mainly) and openBIS (through the DSWiki and openBIS documentation). Your primary goal is to provide clear, accurate, and helpful answers to users' questions about these systems. You must be conversational, confident, and consistently knowledgeable."  # Or handle error appropriately
+            return (
+                "You are **DeSi**, a friendly and expert assistant specializing **exclusively** in the BAM Data Store Project (mainly) and openBIS (through the DSWiki and openBIS documentation). Your primary goal is to provide clear, accurate, and helpful answers to users' questions about these systems. You must be conversational, confident, and consistently knowledgeable."
+                + query
+            )
 
         context_str = ""
-        for i, chunk in enumerate(relevant_chunks, 1):
-            source = chunk.metadata.get("source", "Unknown")
-            origin = chunk.metadata.get("origin", "Unknown")
-            context_str += (
-                f"--- Context Chunk {i} (Origin: {origin}, Source: {source}) ---\n"
-            )
-            context_str += chunk.page_content
-            context_str += "\n--------------------------------------------\n\n"
+        if relevant_chunks:
+            for i, chunk in enumerate(relevant_chunks, 1):
+                source = chunk.metadata.get("source", "Unknown")
+                origin = chunk.metadata.get("origin", "Unknown")
+                context_str += (
+                    f"--- Context Chunk {i} (Origin: {origin}, Source: {source}) ---\n"
+                )
+                context_str += chunk.page_content
+                context_str += "\n--------------------------------------------\n\n"
+        else:
+            context_str = "No specific documentation context was found for this query."
 
-        # Format the template string
-        return self.prompt_template.format(context_str=context_str, query=query)
+        # Format conversation history
+        history_str = ""
+        if conversation_history:
+            for message in conversation_history:
+                role = "User" if message["role"] == "user" else "Assistant"
+                history_str += f"{role}: {message['content']}\n"
+        else:
+            history_str = "This is the beginning of the conversation."
 
-    def generate_answer(self, query: str, relevant_chunks: List[Document]) -> str:
+        return self.prompt_template.format(
+            history_str=history_str, context_str=context_str, query=query
+        )
+
+    def generate_answer(self, prompt: str) -> str:
         """
         Generates an answer using the LLM based on the query and relevant chunks.
         """
         if not self.llm:
             return "The Language Model is not available. Cannot generate an answer."
-        # if not relevant_chunks:
-        #    return "I do not have enough information to answer that question."
 
-        prompt = self._create_prompt(query, relevant_chunks)
         logger.info("Generating answer with LLM...")
 
         try:
             response = self.llm.invoke(prompt)
             raw_answer = response.content
-
-            # This regex finds the <think>...</think> block (including multi-line content)
-            # and replaces it with an empty string. It will not error if the block is not found.
             cleaned_answer = re.sub(
                 r"<think>.*?</think>", "", raw_answer, flags=re.DOTALL
             )
-
             return cleaned_answer.strip()
-
         except Exception as e:
             logger.error(f"An error occurred while generating the answer: {e}")
             return "There was an error generating the answer."
 
-    def query(self, query: str, top_k: int = 5) -> Tuple[str, List[Document]]:
+    def query(
+        self, query: str, conversation_history: List[Dict] = None, top_k: int = 5
+    ) -> Tuple[str, List[Document]]:
         """
         Executes the full RAG pipeline for a given query.
         """
@@ -253,11 +268,17 @@ class RAGQueryEngine:
             logger.error(error_message)
             return error_message, []
 
+        if conversation_history is None:
+            conversation_history = []
+
         # Step 1: Retrieve relevant chunks from the vector database (with score boosting)
         relevant_chunks = self.retrieve_relevant_chunks(query, top_k=top_k)
 
-        # Step 2: Generate an answer using the retrieved context
-        answer = self.generate_answer(query, relevant_chunks)
+        # Step 2: Create a rich prompt with history, context, and the query
+        prompt = self._create_prompt(query, relevant_chunks, conversation_history)
+
+        # Step 3: Generate an answer using the rich prompt
+        answer = self.generate_answer(prompt)
 
         return answer, relevant_chunks
 
