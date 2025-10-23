@@ -1,46 +1,40 @@
 ﻿#!/usr/bin/env python3
 """
-Main Conversation Engine for the Chatbot using LangGraph.
+Conversation engine for DeSi.
 
-This script orchestrates the conversational workflow, managing user interaction,
-short-term memory with SQLite, and interfacing with the RAG query engine
-within a structured, extensible LangGraph graph.
+This module manages the conversational workflow on top of LangGraph, combining
+retrieval-augmented generation, conversation memory, and the unified processor
+vector store.
 """
 
+import json
 import logging
+import re
 import sqlite3
 import uuid
-from typing import Dict, List, TypedDict
+from datetime import datetime
+from typing import Annotated, Dict, List, Optional, Tuple, TypedDict
 
-from langchain_community.chat_models import ChatOllama
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 
-# Import the RAG engine from your existing query.py file
-from query import OLLAMA_AVAILABLE, RAGQueryEngine
+from .query import DesiRAGQueryEngine
 
-# --- Basic Configuration ---
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 
-class SqliteConversationMemory:
-    """
-    SQLite-based conversation memory for storing and managing short-term context.
-    """
+class ConversationMemory:
+    """SQLite-based conversation memory for storing user-chatbot exchanges."""
 
-    def __init__(
-        self,
-        db_path: str = "./data/chatbot_memory.db",
-        history_limit: int = 20,
-    ):
+    def __init__(self, db_path: str = "desi_conversation_memory.db"):
+        """Initialize conversation memory with SQLite database."""
         self.db_path = db_path
-        self.history_limit = history_limit
         self._init_database()
-        logger.info(f"Connected to SQLite memory database at {db_path}")
 
     def _init_database(self) -> None:
+        """Initialize the SQLite database with required tables."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -48,9 +42,11 @@ class SqliteConversationMemory:
                 CREATE TABLE IF NOT EXISTS conversations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
+                    message_type TEXT NOT NULL,
                     content TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    token_count INTEGER DEFAULT 0,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    metadata TEXT
                 )
                 """
             )
@@ -62,302 +58,420 @@ class SqliteConversationMemory:
             )
             conn.commit()
 
-    def add_message(self, session_id: str, role: str, content: str) -> None:
+    def add_message(
+        self,
+        session_id: str,
+        message_type: str,
+        content: str,
+        token_count: int = 0,
+        metadata: Optional[Dict] = None,
+    ) -> None:
+        """Add a message to the conversation history."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            metadata_json = json.dumps(metadata) if metadata else None
             cursor.execute(
-                "INSERT INTO conversations (session_id, role, content) VALUES (?, ?, ?)",
-                (session_id, role, content),
+                """
+                INSERT INTO conversations
+                (session_id, message_type, content, token_count, metadata)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (session_id, message_type, content, token_count, metadata_json),
             )
             conn.commit()
 
-    def get_recent_messages(self, session_id: str) -> List[Dict]:
+    def get_recent_messages(self, session_id: str, limit: int = 20) -> List[Dict]:
+        """Get the most recent messages for a session."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT role, content FROM conversations WHERE session_id = ?
-                ORDER BY timestamp DESC LIMIT ?
+                SELECT message_type, content, token_count, timestamp, metadata
+                FROM conversations
+                WHERE session_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
                 """,
-                (session_id, self.history_limit),
+                (session_id, limit),
             )
-            rows = cursor.fetchall()
-            return [
-                {"role": role, "content": content} for role, content in reversed(rows)
-            ]
+
+            messages: List[Dict] = []
+            for row in reversed(cursor.fetchall()):
+                message_type, content, token_count, timestamp, metadata_json = row
+                metadata = json.loads(metadata_json) if metadata_json else {}
+                messages.append(
+                    {
+                        "type": message_type,
+                        "content": content,
+                        "token_count": token_count,
+                        "timestamp": timestamp,
+                        "metadata": metadata,
+                    }
+                )
+            return messages
+
+    def get_total_tokens(self, session_id: str) -> int:
+        """Get total token count for a session."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT SUM(token_count) FROM conversations WHERE session_id = ?",
+                (session_id,),
+            )
+            result = cursor.fetchone()[0]
+            return result if result else 0
 
     def clear_session(self, session_id: str) -> None:
+        """Clear all messages for a specific session."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "DELETE FROM conversations WHERE session_id = ?", (session_id,)
             )
             conn.commit()
-        logger.info(f"Cleared memory for session: {session_id}")
 
 
-class GraphState(TypedDict):
-    """
-    Represents the state of our conversation graph.
+class ConversationState(TypedDict):
+    """State for the conversation graph."""
 
-    Attributes:
-        session_id: The unique ID for the conversation.
-        user_query: The latest query from the user.
-        history: The recent conversation history.
-        response: The final response from the assistant.
-        sources: A list of sources used by the RAG engine.
-    """
-
-    session_id: str
+    messages: Annotated[List[BaseMessage], "The conversation messages"]
     user_query: str
-    rewritten_query: str
-    history: List[Dict]
+    rag_context: List[Dict]
     response: str
-    sources: List[Dict]
+    session_id: str
+    token_count: int
 
 
-class ChatbotEngine:
-    """
-    The main engine to run the chatbot conversation using a LangGraph workflow.
-    """
+DEFAULT_HISTORY_LIMIT = 20
+
+
+class DesiConversationEngine:
+    """Conversation engine for DeSi with memory and RAG integration."""
 
     def __init__(
         self,
-        rag_engine: RAGQueryEngine,
-        memory: SqliteConversationMemory,
-        rewrite_llm: ChatOllama,
+        db_path: str = "desi_vectordb",
+        collection_name: str = "desi_docs",
+        model: str = "gpt-oss:20b",
+        memory_db_path: str = "desi_conversation_memory.db",
+        retrieval_top_k: int = 5,
+        history_limit: int = DEFAULT_HISTORY_LIMIT,
     ):
-        self.rag_engine = rag_engine
-        self.memory = memory
-        self.rewrite_llm = rewrite_llm
-        self.graph = self._build_graph()
-        logger.info("ChatbotEngine with LangGraph workflow initialized.")
-
-    def _format_history_for_prompt(self, history: List[Dict]) -> str:
-        if not history:
-            return ""
-        formatted_history = "Previous conversation history:\n"
-        for message in history:
-            role = "User" if message["role"] == "user" else "Assistant"
-            formatted_history += f"{role}: {message['content']}\n"
-        return formatted_history + "\n---\n"
-
-    def rewrite_query_node(self, state: GraphState) -> Dict:
         """
-        Node that rewrites the user's query to be self-contained for better retrieval.
+        Initialize the conversation engine.
+
+        Args:
+            db_path: Path to the ChromaDB database directory.
+            collection_name: Name of the ChromaDB collection.
+            model: Ollama model to use (when available).
+            memory_db_path: Path to SQLite database for conversation memory.
+            retrieval_top_k: Number of documentation chunks to retrieve per turn.
+            history_limit: Number of historical turns to feed back into prompts.
         """
-        logger.info(f"Node: rewrite_query_node for session {state['session_id']}")
-        user_query = state["user_query"]
-        history = self.memory.get_recent_messages(state["session_id"])
+        self.db_path = db_path
+        self.collection_name = collection_name
+        self.model = model
+        self.memory_db_path = memory_db_path
+        self.retrieval_top_k = retrieval_top_k
+        self.history_limit = history_limit
 
-        if not history:  # If it's the first message, no need to rewrite
-            return {"rewritten_query": user_query}
-
-        history_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])
-
-        rewrite_prompt = f"""
-Given the following conversation history and a user's follow-up question, rewrite the user's question to be a standalone question that can be understood without the context of the chat history.
-
-This standalone question will be used to search a knowledge base.
-
-If the user's question is already a good standalone question, simply return it as is.
-
-<Conversation History>
-{history_str}
-</Conversation History>
-
-User's Follow-up Question: "{user_query}"
-
-Standalone Question:
-"""
-
-        rewritten_query = self.rewrite_llm.invoke(rewrite_prompt).content
+        self.rag_engine = DesiRAGQueryEngine(
+            db_path=db_path,
+            collection_name=collection_name,
+            model=model,
+        )
         logger.info(
-            f"Original query: '{user_query}' -> Rewritten query: '{rewritten_query}'"
+            "Conversation engine initialised (Ollama available: %s)",
+            self.rag_engine.ollama_available,
         )
-        return {"rewritten_query": rewritten_query}
 
-    # --- Node Definitions for the Graph ---
+        self.conversation_memory = ConversationMemory(memory_db_path)
+        conn = sqlite3.connect(memory_db_path, check_same_thread=False)
+        self.memory = SqliteSaver(conn=conn)
+        self.graph = self._build_graph()
 
-    def call_rag_engine(self, state: GraphState) -> Dict:
-        """
-        Node that queries the RAG engine, providing history and query separately.
-        """
-        logger.info(f"Node: call_rag_engine for session {state['session_id']}")
-        rewritten_query = state["rewritten_query"]
-        session_id = state["session_id"]
-
-        # 1. Get history from memory to provide conversational context
-        history = self.memory.get_recent_messages(session_id)
-
-        # 2. Call the RAG engine with separate arguments
-        #    - `user_query` is used for clean vector retrieval.
-        #    - `history` is used for LLM prompt context.
-        answer, sources_docs = self.rag_engine.query(
-            query=rewritten_query, conversation_history=history
+    def _conversation_history_for_prompt(self, session_id: str) -> List[Dict[str, str]]:
+        """Return recent conversation history formatted for prompting."""
+        raw_history = self.conversation_memory.get_recent_messages(
+            session_id, limit=self.history_limit
         )
-        sources = [doc.metadata for doc in sources_docs]
+        history: List[Dict[str, str]] = []
+        for item in raw_history:
+            history.append(
+                {
+                    "role": item.get("type", "user"),
+                    "content": item.get("content", ""),
+                }
+            )
+        return history
 
-        return {"response": answer, "sources": sources}
+    def _build_state_messages(
+        self,
+        conversation_history: List[Dict[str, str]],
+        rag_chunks: List[Dict],
+        user_query: str,
+        assistant_answer: str,
+    ) -> List[BaseMessage]:
+        """Assemble LangChain message objects for graph state tracking."""
+        messages: List[BaseMessage] = []
 
-    def update_memory(self, state: GraphState) -> Dict:
-        """
-        Node that saves the latest user query and assistant response to memory.
-        """
-        logger.info(f"Node: update_memory for session {state['session_id']}")
-        self.memory.add_message(state["session_id"], "user", state["user_query"])
-        self.memory.add_message(state["session_id"], "assistant", state["response"])
+        system_message = SystemMessage(
+            content=(
+                "You are DeSi, a knowledgeable assistant specializing in openBIS "
+                "and data store operations. Be friendly, clear, and ground every "
+                "answer in the retrieved documentation context."
+            )
+        )
+        messages.append(system_message)
 
-        return {}  # No state update needed from this node
+        for item in conversation_history:
+            role = (item.get("role") or "user").lower()
+            content = item.get("content", "")
+            if not content:
+                continue
+            if role == "assistant":
+                messages.append(AIMessage(content=content))
+            else:
+                messages.append(HumanMessage(content=content))
+
+        if rag_chunks:
+            context_lines = []
+            for idx, chunk in enumerate(rag_chunks, start=1):
+                source_label = chunk.get("source_label") or chunk.get(
+                    "source", "unknown"
+                )
+                title = chunk.get("title", "Untitled")
+                score = chunk.get("similarity_score", 0.0)
+                context_lines.append(
+                    f"[Context {idx}] {source_label} · {title} (score {score:.3f})"
+                )
+            messages.append(
+                SystemMessage(
+                    content="Retrieved documentation context:\n"
+                    + "\n".join(context_lines)
+                )
+            )
+
+        messages.append(HumanMessage(content=user_query))
+        messages.append(AIMessage(content=assistant_answer))
+        return messages
+
+    @staticmethod
+    def _estimate_token_count(messages: List[BaseMessage]) -> int:
+        """Rough token estimation based on whitespace-delimited words."""
+        text = " ".join(
+            msg.content for msg in messages if hasattr(msg, "content") and msg.content
+        )
+        return int(len(text.split()) * 1.3)
 
     def _build_graph(self) -> StateGraph:
-        """
-        Builds and compiles the LangGraph conversation workflow.
-        """
-        workflow = StateGraph(GraphState)
+        """Build the LangGraph conversation flow."""
 
-        # Add the nodes to the graph
-        workflow.add_node("rewrite_query", self.rewrite_query_node)
-        workflow.add_node("rag_agent", self.call_rag_engine)
-        workflow.add_node("update_memory", self.update_memory)
-
-        # Define the flow of the graph
-        workflow.set_entry_point("rewrite_query")
-        workflow.add_edge("rewrite_query", "rag_agent")
-        workflow.add_edge("rag_agent", "update_memory")
-        workflow.add_edge("update_memory", END)
-
-        # Compile the graph into a runnable object
-        return workflow.compile()
-
-    def chat(self, user_input: str, session_id: str) -> str:
-        """
-        Processes a single user message through the LangGraph workflow.
-        """
-        initial_state = GraphState(
-            session_id=session_id,
-            user_query=user_input,
-            rewritten_query="",
-            history=[],
-            response="",
-            sources=[],
-        )
-        # Invoke the graph with the initial state
-        final_state = self.graph.invoke(initial_state)
-        response = final_state.get("response", "Sorry, something went wrong.")
-        sources = final_state.get("sources", [])
-        return response, sources
-
-    def _generate_initial_greeting(self) -> str:
-        logger.info("Generating initial greeting from LLM...")
-        greeting_prompt = (
-            "You are **DeSi**, a friendly and expert assistant specializing **exclusively** in the BAM Data Store Project (mainly) and openBIS."
-            "Generate a brief, welcoming opening message. Greet the user, introduce yourself and invite the user to ask a question."
-        )
-        try:
-            # We create a dummy prompt without history or context for the greeting
-            prompt = self.rag_engine._create_prompt(greeting_prompt, [], [])
-            greeting = self.rag_engine.generate_answer(prompt)
-            return greeting
-        except Exception as e:
-            logger.error(f"Failed to generate LLM greeting: {e}")
-            return "Hello! I am DeSi. How can I help you today?"
-
-    def start_chat_session(self):
-        """
-        Starts an interactive chat session in the terminal.
-        """
-        session_id = str(uuid.uuid4())
-        print("--- Chat Session Started (LangGraph Workflow) ---")
-        print(f"Session ID: {session_id}")
-        print("Type 'exit' to end the session.\n")
-
-        initial_greeting = self._generate_initial_greeting()
-        print(f"Assistant: {initial_greeting}\n")
-        self.memory.add_message(session_id, "assistant", initial_greeting)
-
-        while True:
+        def rag_agent(state: ConversationState) -> ConversationState:
+            """RAG agent for documentation queries."""
             try:
-                user_input = input("You: ")
-                if user_input.lower().strip() == "exit":
-                    self.memory.clear_session(session_id)
-                    print("Session ended and memory cleared. Goodbye!")
-                    break
-                if not user_input.strip():
-                    continue
+                session_id = state.get("session_id") or "default"
+                conversation_history = self._conversation_history_for_prompt(session_id)
 
-                # 1. Get both response and sources from the chat method
-                response, sources = self.chat(user_input, session_id)
+                answer, relevant_chunks = self.rag_engine.query(
+                    state["user_query"],
+                    top_k=self.retrieval_top_k,
+                    conversation_history=conversation_history,
+                )
 
-                # 2. Print the results using the desired formatting logic
-                print(f"\nAssistant: {response}")
-                print("\n--- Sources Used ---")
-                displayed_sources = set()
-                if not sources:
-                    print("No sources were used for this response.")
-                else:
-                    for source_meta in sources:
-                        source = source_meta.get("source", "N/A")
-                        if source not in displayed_sources:
-                            raw_origin = source_meta.get("origin", "N/A")
-                            if raw_origin == "dswiki":
-                                display_origin = "DataStore Wiki"
-                            elif raw_origin == "openbis":
-                                display_origin = "openBIS Wiki"
-                            else:
-                                display_origin = raw_origin.title()
-                            print(f"- Origin: {display_origin}, Source: {source}")
-                            displayed_sources.add(source)
+                cleaned_answer = self.clean_response(answer)
+                state["response"] = cleaned_answer
+                state["rag_context"] = relevant_chunks
+                state["messages"] = self._build_state_messages(
+                    conversation_history,
+                    relevant_chunks,
+                    state["user_query"],
+                    cleaned_answer,
+                )
+                state["token_count"] = self._estimate_token_count(state["messages"])
 
-                print("\n" + "=" * 50 + "\n")
+                logger.info(
+                    "Generated response for session %s (chunks=%d, tokens≈%d)",
+                    session_id,
+                    len(relevant_chunks),
+                    state["token_count"],
+                )
+                return state
+            except Exception as exc:
+                logger.error(f"Error in RAG agent: {exc}")
+                state["response"] = f"I encountered an error: {exc}"
+                state["rag_context"] = []
+                state["messages"] = []
+                state["token_count"] = 0
+                return state
 
-            except KeyboardInterrupt:
-                self.memory.clear_session(session_id)
-                print("\nSession interrupted. Goodbye!")
-                break
-            except Exception as e:
-                logger.error(f"An unexpected error occurred: {e}", exc_info=True)
-                print("Sorry, an error occurred. Please check the logs.")
+        def update_conversation(state: ConversationState) -> ConversationState:
+            """Persist the latest exchange in the conversation memory."""
+            try:
+                session_id = state.get("session_id") or "default"
 
+                user_tokens = int(len(state["user_query"].split()) * 1.3)
+                assistant_tokens = int(len(state["response"].split()) * 1.3)
 
-if __name__ == "__main__":
-    # --- Configuration ---
-    CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
-    PROMPT_TEMPLATE_PATH = "./prompts/desi_query_prompt.md"
-    SQLITE_DB_PATH = "./data/conversation_memory.db"
-    CONVERSATION_HISTORY_LIMIT = 20
-    # Value for boosting dswiki chunks
-    DSWIKI_BOOST_VALUE = 0.15
-    # A score of 0.7 means we discard any chunk with less than 70% similarity.
-    RELEVANCE_THRESHOLD = 0.6
-    # The model used by your RAG engine
-    LLM_MODEL = "qwen3"
+                self.conversation_memory.add_message(
+                    session_id=session_id,
+                    message_type="user",
+                    content=state["user_query"],
+                    token_count=user_tokens,
+                    metadata={
+                        "rag_context_count": len(state.get("rag_context", [])),
+                        "retrieval_top_k": self.retrieval_top_k,
+                    },
+                )
 
-    if not OLLAMA_AVAILABLE:
-        print(
-            "Ollama is not available. Please start the Ollama server to run the chatbot."
+                self.conversation_memory.add_message(
+                    session_id=session_id,
+                    message_type="assistant",
+                    content=state["response"],
+                    token_count=assistant_tokens,
+                    metadata={
+                        "model": self.model,
+                        "rag_sources": [
+                            chunk.get("source")
+                            for chunk in state.get("rag_context", [])
+                        ],
+                    },
+                )
+
+                total_tokens = self.conversation_memory.get_total_tokens(session_id)
+                state["token_count"] = total_tokens
+                logger.info(
+                    "Saved conversation turn. Session %s now has %d tokens.",
+                    session_id,
+                    total_tokens,
+                )
+                return state
+            except Exception as exc:
+                logger.error(f"Error updating conversation: {exc}")
+                return state
+
+        workflow = StateGraph(ConversationState)
+        workflow.add_node("rag_agent", rag_agent)
+        workflow.add_node("update_conversation", update_conversation)
+
+        workflow.set_entry_point("rag_agent")
+        workflow.add_edge("rag_agent", "update_conversation")
+        workflow.add_edge("update_conversation", END)
+
+        return workflow.compile(checkpointer=self.memory)
+
+    def create_session(self) -> str:
+        """Create a new conversation session."""
+        session_id = str(uuid.uuid4())
+        logger.info(f"Created new session: {session_id}")
+        return session_id
+
+    @staticmethod
+    def clean_response(response: str) -> str:
+        """Remove <think></think> tags from the response."""
+        cleaned = re.sub(r"<think>.*?</think>\s*", "", response, flags=re.DOTALL)
+        return cleaned.strip()
+
+    def chat(
+        self, user_input: str, session_id: Optional[str] = None
+    ) -> Tuple[str, str, Dict]:
+        """
+        Process a user input and return the response.
+
+        Args:
+            user_input: The user's message.
+            session_id: Optional session ID for conversation continuity.
+
+        Returns:
+            Tuple of (response, session_id, metadata).
+        """
+        if not session_id:
+            session_id = self.create_session()
+
+        config = RunnableConfig(configurable={"thread_id": session_id})
+
+        initial_state = ConversationState(
+            messages=[],
+            user_query=user_input,
+            rag_context=[],
+            response="",
+            session_id=session_id,
+            token_count=0,
         )
-    else:
-        try:
-            rag_engine = RAGQueryEngine(
-                chroma_persist_directory=CHROMA_PERSIST_DIRECTORY,
-                dswiki_boost=DSWIKI_BOOST_VALUE,
-                llm_model=LLM_MODEL,
-                prompt_template_path=PROMPT_TEMPLATE_PATH,
-                relevance_score_threshold=RELEVANCE_THRESHOLD,
-            )
-            conversation_memory = SqliteConversationMemory(
-                db_path=SQLITE_DB_PATH, history_limit=CONVERSATION_HISTORY_LIMIT
-            )
-            # A separate, base LLM instance for the rewriting task
-            rewrite_llm = ChatOllama(model=LLM_MODEL)
 
-            # Initialize the chatbot engine
-            chatbot = ChatbotEngine(
-                rag_engine=rag_engine,
-                memory=conversation_memory,
-                rewrite_llm=rewrite_llm,
+        try:
+            result = self.graph.invoke(initial_state, config)
+            raw_response = result.get("response", "")
+            cleaned_response = self.clean_response(raw_response)
+
+            metadata = {
+                "session_id": session_id,
+                "token_count": int(result.get("token_count", 0)),
+                "rag_chunks_used": len(result.get("rag_context", [])),
+                "conversation_length": len(result.get("messages", [])),
+                "timestamp": datetime.now().isoformat(),
+                "ollama_available": self.rag_engine.ollama_available,
+            }
+
+            logger.info(f"Chat completed for session {session_id}: {metadata}")
+            return cleaned_response, session_id, metadata
+
+        except Exception as exc:
+            logger.error(f"Error in chat processing: {exc}")
+            return f"I encountered an error: {exc}", session_id, {"error": str(exc)}
+
+    def get_conversation_history(self, session_id: str) -> List[Dict]:
+        """
+        Get the conversation history for a session.
+
+        Args:
+            session_id: The session ID.
+
+        Returns:
+            List of conversation messages.
+        """
+        try:
+            return self.conversation_memory.get_recent_messages(session_id, limit=100)
+        except Exception as exc:
+            logger.error(f"Error getting conversation history: {exc}")
+            return []
+
+    def get_session_stats(self, session_id: str) -> Dict:
+        """Get statistics for a specific session."""
+        try:
+            total_tokens = self.conversation_memory.get_total_tokens(session_id)
+            messages = self.conversation_memory.get_recent_messages(
+                session_id, limit=1000
             )
-            chatbot.start_chat_session()
-        except Exception as e:
-            logger.error(f"Failed to initialize the chatbot: {e}", exc_info=True)
+
+            return {
+                "session_id": session_id,
+                "total_messages": len(messages),
+                "total_tokens": total_tokens,
+                "user_messages": len([m for m in messages if m["type"] == "user"]),
+                "assistant_messages": len(
+                    [m for m in messages if m["type"] == "assistant"]
+                ),
+            }
+        except Exception as exc:
+            logger.error(f"Error getting session stats: {exc}")
+            return {}
+
+    def clear_session_memory(self, session_id: str) -> bool:
+        """Clear all memory for a specific session."""
+        try:
+            self.conversation_memory.clear_session(session_id)
+            logger.info(f"Cleared memory for session: {session_id}")
+            return True
+        except Exception as exc:
+            logger.error(f"Error clearing session memory: {exc}")
+            return False
+
+    def get_database_stats(self) -> Dict:
+        """Get statistics about the vector database."""
+        return self.rag_engine.get_database_stats()
+
+    def close(self) -> None:
+        """Close the conversation engine and its resources."""
+        self.rag_engine.close()
+        logger.info("Conversation engine closed")

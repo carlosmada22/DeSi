@@ -20,13 +20,27 @@ logger = logging.getLogger(__name__)
 
 def parse_args(args=None):
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Query DeSi using RAG with vector database.")
-    parser.add_argument("--db-path", default="desi_vectordb", help="Path to the ChromaDB database directory")
-    parser.add_argument("--collection-name", default="desi_docs", help="Name of the ChromaDB collection")
-    parser.add_argument("--model", default="gpt-oss:20b", help="The Ollama model to use for chat")
-    parser.add_argument("--top-k", type=int, default=5, help="The number of chunks to retrieve")
+    parser = argparse.ArgumentParser(
+        description="Query DeSi using RAG with vector database."
+    )
+    parser.add_argument(
+        "--db-path",
+        default="desi_vectordb",
+        help="Path to the ChromaDB database directory",
+    )
+    parser.add_argument(
+        "--collection-name", default="desi_docs", help="Name of the ChromaDB collection"
+    )
+    parser.add_argument(
+        "--model", default="gpt-oss:20b", help="The Ollama model to use for chat"
+    )
+    parser.add_argument(
+        "--top-k", type=int, default=5, help="The number of chunks to retrieve"
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
-    parser.add_argument("--stats", action="store_true", help="Show database statistics and exit")
+    parser.add_argument(
+        "--stats", action="store_true", help="Show database statistics and exit"
+    )
 
     return parser.parse_args(args)
 
@@ -40,9 +54,7 @@ def run_with_args(args):
     try:
         # Create the query engine
         query_engine = DesiRAGQueryEngine(
-            db_path=args.db_path,
-            collection_name=args.collection_name,
-            model=args.model
+            db_path=args.db_path, collection_name=args.collection_name, model=args.model
         )
 
         # Show stats if requested
@@ -67,15 +79,17 @@ def run_with_args(args):
                 if not query:
                     continue
 
-                if query.lower() in ['quit', 'exit', 'q']:
+                if query.lower() in ["quit", "exit", "q"]:
                     break
 
-                if query.lower() == 'stats':
+                if query.lower() == "stats":
                     stats = query_engine.get_database_stats()
-                    print(f"\nDatabase Statistics:")
+                    print("\nDatabase Statistics:")
                     print(f"Total chunks: {stats.get('total_chunks', 0)}")
                     print(f"Collection name: {stats.get('collection_name', 'unknown')}")
-                    print(f"Source distribution: {stats.get('source_distribution', {})}")
+                    print(
+                        f"Source distribution: {stats.get('source_distribution', {})}"
+                    )
                     continue
 
                 # Process the query
@@ -83,17 +97,19 @@ def run_with_args(args):
                 answer, relevant_chunks = query_engine.query(query, top_k=args.top_k)
 
                 # Display the answer
-                print(f"\nAnswer:")
+                print("\nAnswer:")
                 print(answer)
 
                 # Display relevant chunks if verbose
                 if args.verbose and relevant_chunks:
                     print(f"\nRelevant chunks used ({len(relevant_chunks)}):")
                     for i, chunk in enumerate(relevant_chunks, 1):
-                        source = chunk.get('source', 'unknown')
-                        title = chunk.get('title', 'Unknown')
-                        similarity = chunk.get('similarity_score', 0)
-                        print(f"{i}. [{source.upper()}] {title} (similarity: {similarity:.3f})")
+                        source = chunk.get("source", "unknown")
+                        title = chunk.get("title", "Unknown")
+                        similarity = chunk.get("similarity_score", 0)
+                        print(
+                            f"{i}. [{source.upper()}] {title} (similarity: {similarity:.3f})"
+                        )
 
             except KeyboardInterrupt:
                 print("\nGoodbye!")
