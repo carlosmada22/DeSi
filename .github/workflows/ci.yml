@@ -13,8 +13,7 @@ env:
   UV_SYSTEM_PYTHON: true
 
 jobs:
-  # Job to run linting, formatting, and type checks.
-  # This job now runs in PARALLEL with the test-and-coverage job.
+  # Job to run linting and formatting checks.
   checks:
     runs-on: ubuntu-latest
     steps:
@@ -46,13 +45,8 @@ jobs:
       - name: Run Ruff Formatter Check
         run: ruff format --check src tests
 
-  #    - name: Run MyPy
-  #      run: mypy src
-
   # Job to run tests across multiple Python versions and report coverage
-  # This job now runs in PARALLEL with the checks job.
   test-and-coverage:
-    # The 'needs: lint-and-format' line has been REMOVED to allow parallel execution.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -80,22 +74,40 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-uv-
 
+      # Install main dependencies, plus the 'coveralls' package for the coverage step
       - name: Install dependencies with uv
-        run: uv pip install -e '.[dev]'
+        run: uv pip install -e '.[dev]' coveralls
 
-      - name: Run tests with pytest and generate coverage report
+      # On all python versions, run tests and generate coverage reports
+      - name: Run tests and generate coverage reports
         run: |
-          # --cov=... : Specifies which directories to measure coverage for.
-          # --cov-report=xml : Creates the coverage.xml file needed by Coveralls.
-          pytest --cov=src/desi/processor --cov-report=xml
+          pytest --cov=src/desi/processor --junitxml=pytest.xml | tee pytest-coverage.txt
 
-      # This step will only run on the Python 3.12 job to avoid uploading
-      # coverage from multiple jobs in the matrix.
-      - name: Upload coverage reports to Coveralls
+      # The following steps only run on the Python 3.12 job to avoid duplicate reports
+      - name: Post pytest coverage comment on PR
         if: matrix.python-version == '3.12'
-        uses: coverallsapp/github-action@cfd06338b943265b75b1d83a48e42d76854580ec
+        uses: MishaKav/pytest-coverage-comment@main
         with:
-          # The GITHUB_TOKEN is automatically provided by GitHub Actions.
+          pytest-coverage-path: ./pytest-coverage.txt
+          junitxml-path: ./pytest.xml
+
+      - name: Submit coverage report to Coveralls
+        if: matrix.python-version == '3.12'
+        # This step uses the coveralls CLI tool, just like your old working file
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COVERALLS_FLAG_NAME: python-${{ matrix.python-version }}
+          COVERALLS_PARALLEL: true
+        run: |
+          coveralls --service=github
+
+  # This job runs only after all matrix jobs in 'test-and-coverage' are complete
+  coveralls-finish:
+    needs: test-and-coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Finish Coveralls parallel build
+        uses: coverallsapp/github-action@v2
+        with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          # The file path must match the output from the pytest command.
-          file: ./coverage.xml
+          parallel-finished: true
