@@ -8,14 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from desi.processor.ds_processor import (
-    Document,
-    _parse_mermaid_logic,
-    chunk_document,
-    clean_chunk_content,
-    load_and_preprocess_file,
-    split_markdown_by_structure,
-)
+from desi.processor.ds_processor import Document, DsWikiProcessor
 
 
 # --- Test Data Fixtures ---
@@ -61,7 +54,7 @@ def test_load_and_preprocess_file_with_yaml(mocker, sample_md_with_yaml):
     """Tests that YAML frontmatter is correctly parsed."""
     mocker.patch("builtins.open", mock_open(read_data=sample_md_with_yaml))
 
-    content, metadata = load_and_preprocess_file("fake/path.md")
+    content, metadata = DsWikiProcessor._load_and_preprocess_file("fake/path.md")
 
     assert (
         content
@@ -76,7 +69,7 @@ def test_load_and_preprocess_file_no_yaml(mocker, sample_md_no_yaml):
     """Tests that files without YAML are handled gracefully."""
     mocker.patch("builtins.open", mock_open(read_data=sample_md_no_yaml))
 
-    content, metadata = load_and_preprocess_file("fake/path.md")
+    content, metadata = DsWikiProcessor._load_and_preprocess_file("fake/path.md")
 
     assert (
         content == "## Just Content\n\nThis is a document without any YAML frontmatter."
@@ -90,7 +83,7 @@ def test_parse_mermaid_logic():
     diagram = '```mermaid graph TB;\nA(["Start Process"]);\nB(["End Process"]);\nA-->B;'
     expected = "The process is as follows:\nStep 1: Start Process\nStep 2: End Process"
 
-    result = _parse_mermaid_logic(diagram)
+    result = DsWikiProcessor._parse_mermaid_logic(diagram)
     assert result.strip() == expected
 
 
@@ -99,7 +92,7 @@ def test_clean_chunk_content_removes_html():
     dirty_content = "This is <b>bold</b> and <i>italic</i>. <!-- comment -->"
     expected_content = "This is bold and italic."
 
-    result = clean_chunk_content(dirty_content)
+    result = DsWikiProcessor._clean_chunk_content(dirty_content)
     assert result == expected_content
 
 
@@ -112,7 +105,9 @@ def test_split_markdown_by_structure_creates_chunks():
     )
     metadata = {"origin": "dswiki"}
 
-    chunks = split_markdown_by_structure(long_content, metadata, min_chunk_size=50)
+    chunks = DsWikiProcessor._split_markdown_by_structure(
+        long_content, metadata, min_chunk_size=50
+    )
 
     assert len(chunks) == 2
     assert "## Section 1" in chunks[0].page_content
@@ -131,7 +126,7 @@ def test_chunk_document_integration(tmp_path):
         "---\ntitle: Integration Test\n---\n## A Section\n\nSome content here that is definitely long enough to pass the minimum length check after being processed."
     )
 
-    chunks = chunk_document(str(md_file), str(root_dir))
+    chunks = DsWikiProcessor._chunk_document(str(md_file), str(root_dir))
 
     assert len(chunks) == 1
     chunk = chunks[0]
