@@ -74,16 +74,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-uv-
 
-      # Install main dependencies, plus the 'coveralls' package for the coverage step
+      # Install main dependencies, plus 'coveralls' only on the 3.12 job
       - name: Install dependencies with uv
-        run: uv pip install -e '.[dev]' coveralls
-
-      # On all python versions, run tests and generate coverage reports
-      - name: Run tests and generate coverage reports
         run: |
-          pytest --cov=src/desi/processor --junitxml=pytest.xml | tee pytest-coverage.txt
+          uv pip install -e '.[dev]'
+          if [[ "${{ matrix.python-version }}" == "3.12" ]]; then
+            uv pip install coveralls
+          fi
 
-      # The following steps only run on the Python 3.12 job to avoid duplicate reports
+      # Run tests on all versions. On 3.12, also generate the coverage report.
+      - name: Run tests with pytest
+        run: |
+          if [[ "${{ matrix.python-version }}" == "3.12" ]]; then
+            pytest --cov=src/desi/processor --junitxml=pytest.xml | tee pytest-coverage.txt
+          else
+            pytest
+          fi
+
+      # The following steps now ONLY run on the Python 3.12 job
       - name: Post pytest coverage comment on PR
         if: matrix.python-version == '3.12'
         uses: MishaKav/pytest-coverage-comment@main
@@ -93,21 +101,9 @@ jobs:
 
       - name: Submit coverage report to Coveralls
         if: matrix.python-version == '3.12'
-        # This step uses the coveralls CLI tool, just like your old working file
+        # This is the simple, direct upload method from your old working file.
+        # NO parallel logic.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COVERALLS_FLAG_NAME: python-${{ matrix.python-version }}
-          COVERALLS_PARALLEL: true
         run: |
           coveralls --service=github
-
-  # This job runs only after all matrix jobs in 'test-and-coverage' are complete
-  coveralls-finish:
-    needs: test-and-coverage
-    runs-on: ubuntu-latest
-    steps:
-      - name: Finish Coveralls parallel build
-        uses: coverallsapp/github-action@v2
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          parallel-finished: true
