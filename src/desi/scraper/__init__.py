@@ -1,7 +1,6 @@
 """
 Scraper module for DeSi.
 
-This module contains scrapers for different documentation sources:
-- ReadTheDocs scraper (adapted from original chatBIS)
-- Wiki.js scraper (new implementation)
+This module contains scrapers for the following documentation sources:
+- ReadTheDocs scraper
 """
