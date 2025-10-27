@@ -1,6 +1,7 @@
 import csv
 import datetime
 import json
+import logging
 import os
 import re
 
@@ -9,6 +10,8 @@ from bs4 import BeautifulSoup, Comment
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_community.vectorstores.utils import filter_complex_metadata
+
+logger = logging.getLogger(__name__)
 
 
 # --- Helper Class for Storing Chunks ---
@@ -58,7 +61,7 @@ class DsWikiProcessor:
         Executes the full processing pipeline for the DSWiki data source.
         This method replaces the original run_dswiki_processing function.
         """
-        print("--- Starting DSWiki Processing ---")
+        logger.info("--- Starting DSWiki Processing ---")
 
         # Step 1: Process all markdown files into chunks
         final_chunks = self._process_all_markdown_files(self.root_directory)
@@ -72,11 +75,11 @@ class DsWikiProcessor:
                 final_chunks, self.chroma_persist_directory
             )
 
-            print(
+            logger.info(
                 f"--- DSWiki Processing Complete. Total Chunks: {len(final_chunks)} ---"
             )
         else:
-            print("No DSWiki markdown files were found or processed.")
+            logger.info("No DSWiki markdown files were found or processed.")
 
     @staticmethod
     def _parse_mermaid_logic(diagram_text):
@@ -307,7 +310,7 @@ class DsWikiProcessor:
         """
         Loads a document, enriches metadata, and routes it to the best splitting strategy.
         """
-        print(f"\nProcessing file: {file_path}")
+        logger.info(f"\nProcessing file: {file_path}")
         content, metadata = self._load_and_preprocess_file(file_path)
         if content is None:
             return []
@@ -342,10 +345,10 @@ class DsWikiProcessor:
 
         # Get chunks using the appropriate strategy
         if "faq" in file_path.lower():
-            print("-> Strategy: FAQ/HTML Details Splitting")
+            logger.info("-> Strategy: FAQ/HTML Details Splitting")
             chunks = self._split_faq_style(content, metadata)
         else:
-            print("-> Strategy: Context-Aware Structural Splitting")
+            logger.info("-> Strategy: Context-Aware Structural Splitting")
             chunks = self._split_markdown_by_structure(content, metadata)
 
         # --- NEW: Clean the content of each chunk ---
@@ -367,7 +370,9 @@ class DsWikiProcessor:
         Recursively finds and processes all markdown files in a directory.
         """
         if not os.path.isdir(root_directory):
-            print(f"Error: The specified directory does not exist: {root_directory}")
+            logger.info(
+                f"Error: The specified directory does not exist: {root_directory}"
+            )
             return []
 
         all_chunks = []
@@ -385,18 +390,22 @@ class DsWikiProcessor:
     @staticmethod
     def _create_and_persist_vectordb(chunks, persist_directory):
         if not chunks:
-            print("No chunks to process. Vector database will not be created.")
+            logger.info("No chunks to process. Vector database will not be created.")
             return
 
         # This will convert datetime objects to strings and remove other unsupported types.
         filtered_chunks = filter_complex_metadata(chunks)
 
-        print("\nInitializing embedding model...")
+        logger.info("\nInitializing embedding model...")
         embedding_model = OllamaEmbeddings(model="nomic-embed-text")
-        print("-> Model: nomic-embed-text")
+        logger.info("-> Model: nomic-embed-text")
 
-        print(f"\nCreating and persisting vector database to '{persist_directory}'...")
-        print(f"This may take a while, embedding {len(filtered_chunks)} chunks...")
+        logger.info(
+            f"\nCreating and persisting vector database to '{persist_directory}'..."
+        )
+        logger.info(
+            f"This may take a while, embedding {len(filtered_chunks)} chunks..."
+        )
 
         Chroma.from_documents(
             documents=filtered_chunks,
@@ -405,8 +414,8 @@ class DsWikiProcessor:
             collection_metadata={"hnsw:space": "cosine"},  # cosine distance.
         )
 
-        print("-> Vector database created and saved successfully.")
-        print(
+        logger.info("-> Vector database created and saved successfully.")
+        logger.info(
             f"-> You can now load it from '{persist_directory}' in other applications."
         )
 
@@ -429,7 +438,7 @@ class DsWikiProcessor:
             json.dump(
                 data_to_export, f, indent=4, ensure_ascii=False, cls=CustomJSONEncoder
             )
-        print(f"\nSuccessfully exported {len(chunks)} chunks to {json_path}")
+        logger.info(f"\nSuccessfully exported {len(chunks)} chunks to {json_path}")
 
         # --- Export to CSV ---
         csv_path = os.path.join(output_dir, "chunks_datastore.csv")
@@ -454,7 +463,7 @@ class DsWikiProcessor:
                     else:
                         row[key] = value
                 writer.writerow(row)
-        print(f"Successfully exported {len(chunks)} chunks to {csv_path}")
+        logger.info(f"Successfully exported {len(chunks)} chunks to {csv_path}")
 
         # --- Export to JSONL ---
         jsonl_path = os.path.join(output_dir, "chunks_datastore.jsonl")
@@ -463,7 +472,7 @@ class DsWikiProcessor:
                 f.write(
                     json.dumps(item, ensure_ascii=False, cls=CustomJSONEncoder) + "\n"
                 )
-        print(f"Successfully exported {len(chunks)} chunks to {jsonl_path}")
+        logger.info(f"Successfully exported {len(chunks)} chunks to {jsonl_path}")
 
 
 if __name__ == "__main__":

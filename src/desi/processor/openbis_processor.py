@@ -208,7 +208,7 @@ class OpenBisProcessor:
 
         return content.strip()
 
-    def chunk_openbis_document(
+    def _chunk_openbis_document(
         self, file_path: str, root_directory: str
     ) -> List[Document]:
         """

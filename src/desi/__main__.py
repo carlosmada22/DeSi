@@ -10,8 +10,7 @@ import logging
 import sys
 from pathlib import Path
 
-from desi.scraper.readthedocs_scraper import ReadTheDocsScraper
-from desi.scraper.wikijs_scraper import WikiJSScraper
+from desi.scraper.openbis_scraper import ReadTheDocsScraper, WikiJSScraper
 from desi.utils.config import DesiConfig
 
 SRC_PATH = Path(__file__).resolve().parent / "src"

@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 from urllib.parse import urljoin, urlparse
@@ -5,6 +6,8 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
+
+logger = logging.getLogger(__name__)
 
 
 class OpenbisScraper:
@@ -41,7 +44,7 @@ class OpenbisScraper:
                 continue
 
             try:
-                print(f"Scraping: {current_url}")
+                logger.info(f"Scraping: {current_url}")
                 response = self._fetch_page(current_url)
                 self.visited.add(current_url)
 
@@ -53,9 +56,9 @@ class OpenbisScraper:
                 time.sleep(0.1)
 
             except requests.RequestException as e:
-                print(f"Error scraping {current_url}: {e}")
+                logger.info(f"Error scraping {current_url}: {e}")
             except Exception as e:
-                print(f"An unexpected error occurred for {current_url}: {e}")
+                logger.info(f"An unexpected error occurred for {current_url}: {e}")
 
     def _fetch_page(self, url):
         """
@@ -67,7 +70,7 @@ class OpenbisScraper:
         Returns:
             requests.Response: The response object.
         """
-        response = requests.get(url)
+        response = requests.get(url, timeout=30)
         response.raise_for_status()
         return response
 
@@ -112,7 +115,7 @@ if __name__ == "__main__":
     BASE_URL = "https://openbis.readthedocs.io/en/20.10.0-11/"
     OUTPUT_DIRECTORY = "./data/raw/openbis/improved"
 
-    print("Starting documentation download (as Markdown)...")
+    logger.info("Starting documentation download (as Markdown)...")
     scraper = OpenbisScraper(BASE_URL, OUTPUT_DIRECTORY)
     scraper.scrape()
-    print("\nDownload complete.")
+    logger.info("\nDownload complete.")
