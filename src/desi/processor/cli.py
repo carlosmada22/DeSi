@@ -13,19 +13,15 @@ import shutil
 import sys
 from pathlib import Path
 
-# MODIFIED: Import the processor classes instead of the run functions
+from desi.utils.config import DesiConfig
+from desi.utils.logging import setup_logging
+
 from .ds_processor import DsWikiProcessor
 from .openbis_processor import OpenBisProcessor
 
-# --- Configure Logging (No changes needed) ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    stream=sys.stdout,
-)
 logger = logging.getLogger(__name__)
 
-# --- DEFAULT PATH CONFIGURATION (No changes needed) ---
+# --- DEFAULT PATH CONFIGURATION---
 DEFAULT_DSWIKI_INPUT = "./data/raw/wikijs/daily"
 DEFAULT_OPENBIS_INPUT = "./data/raw/openbis/improved"
 DEFAULT_OUTPUT_DIR = "./data/processed"
@@ -52,7 +48,7 @@ def delete_existing_database(chroma_dir: str):
 
 def main():
     """Main CLI entry point for the complete RAG pipeline."""
-    # --- Argument Parsing (No changes needed) ---
+    # --- Argument Parsing ---
     parser = argparse.ArgumentParser(
         description="Unified RAG Knowledge Base Builder CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -106,7 +102,7 @@ Examples:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    # --- Path Validation (No changes needed) ---
+    # --- Path Validation ---
     for path in [args.dswiki_input, args.openbis_input]:
         if not os.path.exists(path):
             logger.error(
@@ -114,7 +110,7 @@ Examples:
             )
             sys.exit(1)
 
-    # --- Pipeline Execution (MODIFIED SECTION) ---
+    # --- Pipeline Execution ---
     logger.info("🚀 Starting Unified Knowledge Base Build Process...")
     logger.info("=" * 60)
 

@@ -19,9 +19,6 @@ from langgraph.graph import END, StateGraph
 from .query import OLLAMA_AVAILABLE, RAGQueryEngine
 
 # --- Basic Configuration ---
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 

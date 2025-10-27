@@ -4,6 +4,7 @@ Command-line interface for the openbis_scraper.
 """
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -13,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Import the specific function from your scraper script
 from openbis_scraper import scrape_and_find_links
+
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -32,14 +35,14 @@ def main():
 
     args = parser.parse_args()
 
-    print("Starting documentation download (as Markdown)...")
-    print(f"  > Scraping URL: {args.url}")
-    print(f"  > Outputting to: {args.output}")
+    logger.info("Starting documentation download (as Markdown)...")
+    logger.info(f"  > Scraping URL: {args.url}")
+    logger.info(f"  > Outputting to: {args.output}")
 
     # Call the original function with the arguments from the command line
     scrape_and_find_links(base_url=args.url, output_dir=args.output)
 
-    print("\nDownload complete.")
+    logger.info("\nDownload complete.")
 
 
 if __name__ == "__main__":

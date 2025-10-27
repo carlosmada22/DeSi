@@ -21,9 +21,6 @@ from langchain_community.vectorstores import Chroma
 from langchain_community.vectorstores.utils import filter_complex_metadata
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 # --- OLLAMA EMBEDDING SETUP ---
