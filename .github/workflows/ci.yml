@@ -93,7 +93,7 @@ jobs:
       # coverage from multiple jobs in the matrix.
       - name: Upload coverage reports to Coveralls
         if: matrix.python-version == '3.12'
-        uses: coverallsapp/github-action@v2
+        uses: coverallsapp/github-action@813c32a2e42f9a6b0c5180f13f383f73809d4310
         with:
           # The GITHUB_TOKEN is automatically provided by GitHub Actions.
           github-token: ${{ secrets.GITHUB_TOKEN }}
