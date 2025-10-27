@@ -10,8 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from desi.processor.openbis_processor import (
     ContentChunker,
     Document,
-    _clean_markdown_content,
-    chunk_openbis_document,
+    OpenBisProcessor,
 )
 
 # --- Tests for the Cleaning Function ---
@@ -21,28 +20,28 @@ def test_clean_removes_permalink():
     """Tests that the [] permalink artifact is removed."""
     dirty = '## My Header[](#my-header "Permalink to this heading")'
     clean = "## My Header"
-    assert _clean_markdown_content(dirty) == clean
+    assert OpenBisProcessor._clean_markdown_content(dirty) == clean
 
 
 def test_clean_dedents_code_block():
     """Tests that indented code blocks are properly dedented."""
     dirty = "    // This is some code\n    if (true) {\n        // more code\n    }"
     clean = "// This is some code\nif (true) {\n    // more code\n}"
-    assert _clean_markdown_content(dirty) == clean
+    assert OpenBisProcessor._clean_markdown_content(dirty) == clean
 
 
 def test_clean_handles_nbsp_and_dedents():
     """Tests that non-breaking spaces are handled correctly, allowing dedent to work."""
     dirty = "    line 1\n\u00a0\n    line 2"  # \u00a0 is a non-breaking space
     clean = "line 1\n\nline 2"
-    assert _clean_markdown_content(dirty) == clean
+    assert OpenBisProcessor._clean_markdown_content(dirty) == clean
 
 
 def test_clean_collapses_newlines():
     """Tests that more than two newlines are collapsed."""
     dirty = "Paragraph 1\n\n\n\nParagraph 2"
     clean = "Paragraph 1\n\nParagraph 2"
-    assert _clean_markdown_content(dirty) == clean
+    assert OpenBisProcessor._clean_markdown_content(dirty) == clean
 
 
 # --- Tests for the Chunking Logic ---
@@ -86,7 +85,13 @@ def test_chunk_openbis_document_integration(tmp_path):
     )
     md_file.write_text("## Managing Lab Stocks\n\nThis is some sample content.")
 
-    chunks = chunk_openbis_document(str(md_file), str(root_dir))
+    processor = OpenBisProcessor(
+        root_directory=str(root_dir),
+        output_directory="dummy_output",
+        chroma_persist_directory="dummy_chroma",
+    )
+
+    chunks = processor._chunk_openbis_document(str(md_file))
 
     assert len(chunks) == 1
     chunk = chunks[0]

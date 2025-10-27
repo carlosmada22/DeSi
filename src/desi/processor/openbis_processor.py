@@ -21,9 +21,6 @@ from langchain_community.vectorstores import Chroma
 from langchain_community.vectorstores.utils import filter_complex_metadata
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 # --- OLLAMA EMBEDDING SETUP ---
@@ -65,31 +62,6 @@ class CustomJSONEncoder(json.JSONEncoder):
         # This is included for compatibility with the ds_processor export format,
         # though this script doesn't handle datetime objects.
         return super().default(o)
-
-
-def _clean_markdown_content(content: str) -> str:
-    """Cleans raw markdown content with robust, multi-stage logic."""
-    # 1. **THE KEY FIX**: Normalize whitespace. Replace the non-breaking space
-    # character (U+00A0) with a regular space. This is the root cause of the issue.
-    content = content.replace("\u00a0", " ")
-
-    # 2. Remove permalink artifacts
-    content = re.sub(r'\[\]\(.*? "Permalink to this heading"\)', "", content)
-
-    # 3. Process paragraph by paragraph to find and fix indented code blocks
-    paragraphs = content.split("\n\n")
-    cleaned_paragraphs = []
-    for p in paragraphs:
-        # Check if the paragraph starts with whitespace but is not a list/header
-        if p and p[0].isspace() and not p.strip().startswith(("*", "-", "#")):
-            p = textwrap.dedent(p)
-        cleaned_paragraphs.append(p)
-    content = "\n\n".join(cleaned_paragraphs)
-
-    # 4. Collapse excessive newlines
-    content = re.sub(r"\n{3,}", "\n\n", content)
-
-    return content.strip()
 
 
 class ContentChunker:
@@ -174,170 +146,214 @@ class ContentChunker:
         return chunks
 
 
-def chunk_openbis_document(file_path: str, root_directory: str) -> List[Document]:
+class OpenBisProcessor:
     """
-    Loads, cleans, enriches, and chunks a single openBIS markdown file.
+    Encapsulates the entire processing pipeline for the openBIS data source.
     """
-    logger.info(f"Processing file: {file_path}")
-    try:
-        with open(file_path, encoding="utf-8") as f:
-            raw_content = f.read()
-    except FileNotFoundError:
-        logger.error(f"File not found: {file_path}")
-        return []
 
-    # 1. Clean the specific ReadtheDocs artifacts
-    cleaned_content = _clean_markdown_content(raw_content)
+    def __init__(self, root_directory, output_directory, chroma_persist_directory):
+        self.root_directory = root_directory
+        self.output_directory = output_directory
+        self.chroma_persist_directory = chroma_persist_directory
 
-    # 2. Enrich Metadata
-    metadata = {}
-    path_obj = Path(file_path)
-    relative_path = os.path.relpath(file_path, root_directory)
+    def process(self):
+        """
+        Executes the full processing pipeline. Replaces run_openbis_processing.
+        """
+        print("\n--- Starting openBIS Processing ---")
 
-    metadata["origin"] = "openbis"
-    metadata["source"] = relative_path.replace("\\", "/")
+        # Step 1: Process all markdown files into chunks with enriched metadata
+        final_chunks = self._process_all_openbis_files(self.root_directory)
 
-    # Reconstruct original URL and create a title
-    base_url = "https://openbis.readthedocs.io/"
-    parts = path_obj.stem.split("_")
-    metadata["url"] = base_url + "/".join(parts) + ".html"
-    metadata["title"] = parts[-1].replace("-", " ").capitalize()
+        if final_chunks:
+            # Step 2 (Optional): Export chunks to files for inspection
+            self._export_chunks(final_chunks, self.output_directory)
 
-    # Create section from path structure (e.g., 'user-documentation')
-    if len(parts) > 2:
-        metadata["section"] = parts[2].replace("-", " ").title()
-    else:
-        metadata["section"] = "General"
+            # Step 3: Generate embeddings and save them to ChromaDB
+            self._create_and_persist_vectordb(
+                final_chunks, self.chroma_persist_directory
+            )
 
-    metadata["id"] = f"openbis-{path_obj.stem.lower()}"
+            print(
+                f"--- openBIS Processing Complete. Total Chunks: {len(final_chunks)} ---"
+            )
+        else:
+            print("No openBIS markdown files were found or processed.")
 
-    # 3. Chunk the document
-    chunker = ContentChunker()
-    content_chunks = chunker.chunk_content(cleaned_content)
+    @staticmethod
+    def _clean_markdown_content(content: str) -> str:
+        """Cleans raw markdown content with robust, multi-stage logic."""
+        # 1. **THE KEY FIX**: Normalize whitespace. Replace the non-breaking space
+        # character (U+00A0) with a regular space. This is the root cause of the issue.
+        content = content.replace("\u00a0", " ")
 
-    # 4. Create Document objects with enriched metadata
-    final_chunks = []
-    for i, content in enumerate(content_chunks):
-        chunk_metadata = metadata.copy()
-        chunk_metadata["id"] += f"-{i}"  # Make chunk ID unique
-        final_chunks.append(Document(page_content=content, metadata=chunk_metadata))
+        # 2. Remove permalink artifacts
+        content = re.sub(r'\[\]\(.*? "Permalink to this heading"\)', "", content)
 
-    return final_chunks
+        # 3. Process paragraph by paragraph to find and fix indented code blocks
+        paragraphs = content.split("\n\n")
+        cleaned_paragraphs = []
+        for p in paragraphs:
+            # Check if the paragraph starts with whitespace but is not a list/header
+            if p and p[0].isspace() and not p.strip().startswith(("*", "-", "#")):
+                p = textwrap.dedent(p)
+            cleaned_paragraphs.append(p)
+        content = "\n\n".join(cleaned_paragraphs)
 
+        # 4. Collapse excessive newlines
+        content = re.sub(r"\n{3,}", "\n\n", content)
 
-def process_all_openbis_files(root_directory: str) -> List[Document]:
-    """
-    Recursively finds and processes all markdown files for the openBIS source.
-    """
-    if not os.path.isdir(root_directory):
-        logger.error(f"Error: The specified directory does not exist: {root_directory}")
-        return []
+        return content.strip()
 
-    all_chunks = []
-    for dirpath, _, filenames in os.walk(root_directory):
-        for filename in filenames:
-            if filename.endswith(".md"):
-                file_path = os.path.join(dirpath, filename)
-                chunks = chunk_openbis_document(file_path, root_directory)
-                all_chunks.extend(chunks)
+    def _chunk_openbis_document(
+        self, file_path: str, root_directory: str
+    ) -> List[Document]:
+        """
+        Loads, cleans, enriches, and chunks a single openBIS markdown file.
+        """
+        logger.info(f"Processing file: {file_path}")
+        try:
+            with open(file_path, encoding="utf-8") as f:
+                raw_content = f.read()
+        except FileNotFoundError:
+            logger.error(f"File not found: {file_path}")
+            return []
 
-    return all_chunks
+        # 1. Clean the specific ReadtheDocs artifacts
+        cleaned_content = self._clean_markdown_content(raw_content)
 
+        # 2. Enrich Metadata
+        metadata = {}
+        path_obj = Path(file_path)
+        relative_path = os.path.relpath(file_path, root_directory)
 
-def create_and_persist_vectordb(chunks: List[Document], persist_directory: str):
-    if not chunks:
-        logger.warning("No chunks to process. Vector database will not be created.")
-        return
+        metadata["origin"] = "openbis"
+        metadata["source"] = relative_path.replace("\\", "/")
 
-    filtered_chunks = filter_complex_metadata(chunks)
+        # Reconstruct original URL and create a title
+        base_url = "https://openbis.readthedocs.io/"
+        parts = path_obj.stem.split("_")
+        metadata["url"] = base_url + "/".join(parts) + ".html"
+        metadata["title"] = parts[-1].replace("-", " ").capitalize()
 
-    logger.info("Initializing embedding model...")
-    embedding_model = OllamaEmbeddings(model="nomic-embed-text")
-    logger.info("-> Model: nomic-embed-text")
+        # Create section from path structure (e.g., 'user-documentation')
+        if len(parts) > 2:
+            metadata["section"] = parts[2].replace("-", " ").title()
+        else:
+            metadata["section"] = "General"
 
-    logger.info(f"Creating/updating vector database at '{persist_directory}'...")
-    logger.info(f"This may take a while, embedding {len(filtered_chunks)} chunks...")
+        metadata["id"] = f"openbis-{path_obj.stem.lower()}"
 
-    Chroma.from_documents(
-        documents=filtered_chunks,
-        embedding=embedding_model,
-        persist_directory=persist_directory,
-        collection_metadata={"hnsw:space": "cosine"},  # cosine distance.
-    )
-    logger.info("-> Vector database processing complete.")
+        # 3. Chunk the document
+        chunker = ContentChunker()
+        content_chunks = chunker.chunk_content(cleaned_content)
 
+        # 4. Create Document objects with enriched metadata
+        final_chunks = []
+        for i, content in enumerate(content_chunks):
+            chunk_metadata = metadata.copy()
+            chunk_metadata["id"] += f"-{i}"  # Make chunk ID unique
+            final_chunks.append(Document(page_content=content, metadata=chunk_metadata))
 
-def export_chunks(chunks: List[Document], output_dir: str):
-    """Exports the list of Document chunks to JSON, CSV, and JSONL files."""
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+        return final_chunks
 
-    data_to_export = [
-        {"page_content": chunk.page_content, "metadata": chunk.metadata}
-        for chunk in chunks
-    ]
+    def _process_all_openbis_files(self, root_directory: str) -> List[Document]:
+        """
+        Recursively finds and processes all markdown files for the openBIS source.
+        """
+        if not os.path.isdir(root_directory):
+            logger.error(
+                f"Error: The specified directory does not exist: {root_directory}"
+            )
+            return []
 
-    # Export to JSON
-    json_path = os.path.join(output_dir, "chunks_openbis.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(
-            data_to_export, f, indent=2, ensure_ascii=False, cls=CustomJSONEncoder
+        all_chunks = []
+        for dirpath, _, filenames in os.walk(root_directory):
+            for filename in filenames:
+                if filename.endswith(".md"):
+                    file_path = os.path.join(dirpath, filename)
+                    chunks = self._chunk_openbis_document(file_path, root_directory)
+                    all_chunks.extend(chunks)
+
+        return all_chunks
+
+    @staticmethod
+    def _create_and_persist_vectordb(chunks: List[Document], persist_directory: str):
+        if not chunks:
+            logger.warning("No chunks to process. Vector database will not be created.")
+            return
+
+        filtered_chunks = filter_complex_metadata(chunks)
+
+        logger.info("Initializing embedding model...")
+        embedding_model = OllamaEmbeddings(model="nomic-embed-text")
+        logger.info("-> Model: nomic-embed-text")
+
+        logger.info(f"Creating/updating vector database at '{persist_directory}'...")
+        logger.info(
+            f"This may take a while, embedding {len(filtered_chunks)} chunks..."
         )
-    logger.info(f"\nSuccessfully exported {len(chunks)} chunks to {json_path}")
 
-    # Export to CSV
-    csv_path = os.path.join(output_dir, "chunks_openbis.csv")
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        all_meta_keys = set().union(*(d["metadata"].keys() for d in data_to_export))
+        Chroma.from_documents(
+            documents=filtered_chunks,
+            embedding=embedding_model,
+            persist_directory=persist_directory,
+            collection_metadata={"hnsw:space": "cosine"},  # cosine distance.
+        )
+        logger.info("-> Vector database processing complete.")
 
-        preferred_order = [
-            "id",
-            "origin",
-            "section",
-            "source",
-            "url",
-            "title",
-            "page_content",
+    @staticmethod
+    def export_chunks(chunks: List[Document], output_dir: str):
+        """Exports the list of Document chunks to JSON, CSV, and JSONL files."""
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        data_to_export = [
+            {"page_content": chunk.page_content, "metadata": chunk.metadata}
+            for chunk in chunks
         ]
-        remaining_keys = sorted(list(all_meta_keys - set(preferred_order)))
-        fieldnames = preferred_order + remaining_keys
 
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        for item in data_to_export:
-            row = {"page_content": item["page_content"]}
-            row.update(item["metadata"])
-            writer.writerow(row)
-    logger.info(f"Successfully exported {len(chunks)} chunks to {csv_path}")
+        # Export to JSON
+        json_path = os.path.join(output_dir, "chunks_openbis.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(
+                data_to_export, f, indent=2, ensure_ascii=False, cls=CustomJSONEncoder
+            )
+        logger.info(f"\nSuccessfully exported {len(chunks)} chunks to {json_path}")
 
-    # Export to JSONL
-    jsonl_path = os.path.join(output_dir, "chunks_openbis.jsonl")
-    with open(jsonl_path, "w", encoding="utf-8") as f:
-        for item in data_to_export:
-            f.write(json.dumps(item, ensure_ascii=False, cls=CustomJSONEncoder) + "\n")
-    logger.info(f"Successfully exported {len(chunks)} chunks to {jsonl_path}")
+        # Export to CSV
+        csv_path = os.path.join(output_dir, "chunks_openbis.csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            all_meta_keys = set().union(*(d["metadata"].keys() for d in data_to_export))
 
+            preferred_order = [
+                "id",
+                "origin",
+                "section",
+                "source",
+                "url",
+                "title",
+                "page_content",
+            ]
+            remaining_keys = sorted(list(all_meta_keys - set(preferred_order)))
+            fieldnames = preferred_order + remaining_keys
 
-# Main processing function to be called from other scripts
-def run_openbis_processing(root_directory, output_directory, chroma_persist_directory):
-    """
-    Executes the full processing pipeline for the openBIS data source.
-    """
-    print("\n--- Starting openBIS Processing ---")
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            for item in data_to_export:
+                row = {"page_content": item["page_content"]}
+                row.update(item["metadata"])
+                writer.writerow(row)
+        logger.info(f"Successfully exported {len(chunks)} chunks to {csv_path}")
 
-    # Step 1: Process all markdown files into chunks with enriched metadata
-    final_chunks = process_all_openbis_files(root_directory)
-
-    if final_chunks:
-        # Step 2 (Optional): Export chunks to files for inspection
-        export_chunks(final_chunks, output_directory)
-
-        # Step 3: Generate embeddings and save them to ChromaDB
-        create_and_persist_vectordb(final_chunks, chroma_persist_directory)
-
-        print(f"--- openBIS Processing Complete. Total Chunks: {len(final_chunks)} ---")
-    else:
-        print("No openBIS markdown files were found or processed.")
+        # Export to JSONL
+        jsonl_path = os.path.join(output_dir, "chunks_openbis.jsonl")
+        with open(jsonl_path, "w", encoding="utf-8") as f:
+            for item in data_to_export:
+                f.write(
+                    json.dumps(item, ensure_ascii=False, cls=CustomJSONEncoder) + "\n"
+                )
+        logger.info(f"Successfully exported {len(chunks)} chunks to {jsonl_path}")
 
 
 if __name__ == "__main__":
@@ -346,4 +362,10 @@ if __name__ == "__main__":
     OUTPUT_DIRECTORY = "./data/processed/openbis"
     CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
 
-    run_openbis_processing(ROOT_DIRECTORY, OUTPUT_DIRECTORY, CHROMA_PERSIST_DIRECTORY)
+    # Instantiate the processor and run the pipeline
+    processor = OpenBisProcessor(
+        root_directory=ROOT_DIRECTORY,
+        output_directory=OUTPUT_DIRECTORY,
+        chroma_persist_directory=CHROMA_PERSIST_DIRECTORY,
+    )
+    processor.process()

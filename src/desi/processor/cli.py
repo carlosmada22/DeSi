@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Master CLI for the Unified RAG Knowledge Base Builder
 
@@ -14,20 +13,15 @@ import shutil
 import sys
 from pathlib import Path
 
-# Use relative imports, as this CLI is part of a package
-from .ds_processor import run_dswiki_processing
-from .openbis_processor import run_openbis_processing
+from desi.utils.config import DesiConfig
+from desi.utils.logging import setup_logging
 
-# --- Configure Logging ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    stream=sys.stdout,
-)
+from .ds_processor import DsWikiProcessor
+from .openbis_processor import OpenBisProcessor
+
 logger = logging.getLogger(__name__)
 
-# --- DEFAULT PATH CONFIGURATION ---
-# These paths are used if no arguments are provided on the command line.
+# --- DEFAULT PATH CONFIGURATION---
 DEFAULT_DSWIKI_INPUT = "./data/raw/wikijs/daily"
 DEFAULT_OPENBIS_INPUT = "./data/raw/openbis/improved"
 DEFAULT_OUTPUT_DIR = "./data/processed"
@@ -38,6 +32,7 @@ DEFAULT_CHROMA_DIR = "./desi_vectordb"
 def delete_existing_database(chroma_dir: str):
     """
     Safely deletes the specified ChromaDB directory to ensure a fresh build.
+    (No changes needed in this function)
     """
     if os.path.exists(chroma_dir):
         logger.info(f"Deleting existing vector database at: {chroma_dir}")
@@ -53,6 +48,7 @@ def delete_existing_database(chroma_dir: str):
 
 def main():
     """Main CLI entry point for the complete RAG pipeline."""
+    # --- Argument Parsing ---
     parser = argparse.ArgumentParser(
         description="Unified RAG Knowledge Base Builder CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -68,8 +64,6 @@ Examples:
   python -m desi.processor.cli --no-delete
         """,
     )
-
-    # --- Path Arguments with Defaults ---
     parser.add_argument(
         "--dswiki-input",
         type=str,
@@ -94,8 +88,6 @@ Examples:
         default=DEFAULT_CHROMA_DIR,
         help=f"Directory for the ChromaDB vector store. Default: {DEFAULT_CHROMA_DIR}",
     )
-
-    # --- Control Flags ---
     parser.add_argument(
         "--no-delete",
         action="store_true",
@@ -135,19 +127,23 @@ Examples:
     os.makedirs(openbis_output_dir, exist_ok=True)
 
     try:
-        # Step 1: Run the DSWiki processor
-        run_dswiki_processing(
+        # Step 1: Instantiate and run the DSWiki processor
+        logger.info("Initializing DSWiki Processor...")
+        dswiki_processor = DsWikiProcessor(
             root_directory=args.dswiki_input,
             output_directory=dswiki_output_dir,
             chroma_persist_directory=args.chroma_dir,
         )
+        dswiki_processor.process()
 
-        # Step 2: Run the openBIS processor
-        run_openbis_processing(
+        # Step 2: Instantiate and run the openBIS processor
+        logger.info("\nInitializing openBIS Processor...")
+        openbis_processor = OpenBisProcessor(
             root_directory=args.openbis_input,
             output_directory=openbis_output_dir,
             chroma_persist_directory=args.chroma_dir,
         )
+        openbis_processor.process()
 
         logger.info("\n" + "=" * 60)
         logger.info(

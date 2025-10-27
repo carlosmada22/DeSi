@@ -1,121 +1,99 @@
-#!/usr/bin/env python3
 """
-Command-line interface for the DeSi query engine.
+Command-line interface for the DeSi Conversational Chatbot Engine.
 """
 
 import argparse
 import logging
 import sys
 
-from .query import DesiRAGQueryEngine
+from langchain_community.chat_models import ChatOllama
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# Import the new, class-based components
+from .conversation_engine import ChatbotEngine, SqliteConversationMemory
+from .query import OLLAMA_AVAILABLE, RAGQueryEngine
+
+# --- Basic Configuration ---
 logger = logging.getLogger(__name__)
 
 
-def parse_args(args=None):
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Query DeSi using RAG with vector database.")
-    parser.add_argument("--db-path", default="desi_vectordb", help="Path to the ChromaDB database directory")
-    parser.add_argument("--collection-name", default="desi_docs", help="Name of the ChromaDB collection")
-    parser.add_argument("--model", default="gpt-oss:20b", help="The Ollama model to use for chat")
-    parser.add_argument("--top-k", type=int, default=5, help="The number of chunks to retrieve")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
-    parser.add_argument("--stats", action="store_true", help="Show database statistics and exit")
+def main():
+    """Main entry point for the CLI script."""
+    parser = argparse.ArgumentParser(
+        description="Run the DeSi RAG chatbot in your terminal."
+    )
+    # --- Arguments mapped to the new class constructors ---
+    parser.add_argument(
+        "--db-path",
+        default="./desi_vectordb",
+        help="Path to the ChromaDB vector store directory.",
+    )
+    parser.add_argument(
+        "--prompt-template",
+        default="./prompts/desi_query_prompt.md",
+        help="Path to the prompt template file.",
+    )
+    parser.add_argument(
+        "--memory-db-path",
+        default="./data/conversation_memory.db",
+        help="Path to the SQLite database for conversation memory.",
+    )
+    parser.add_argument(
+        "--llm-model",
+        default="qwen3",
+        help="The Ollama model to use for generation and rewriting.",
+    )
+    parser.add_argument(
+        "--relevance-threshold",
+        type=float,
+        default=0.7,
+        help="The minimum similarity score for a chunk to be considered relevant.",
+    )
+    parser.add_argument(
+        "--verbose", action="store_true", help="Enable verbose (DEBUG) logging."
+    )
 
-    return parser.parse_args(args)
+    args = parser.parse_args()
 
-
-def run_with_args(args):
-    """Run the query engine with the given arguments."""
-    # Set logging level
     if args.verbose:
-        logger.setLevel(logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    if not OLLAMA_AVAILABLE:
+        logger.error(
+            "Ollama is not available. Please start the Ollama server to run the chatbot."
+        )
+        sys.exit(1)
 
     try:
-        # Create the query engine
-        query_engine = DesiRAGQueryEngine(
-            db_path=args.db_path,
-            collection_name=args.collection_name,
-            model=args.model
+        # --- Instantiate all the components ---
+
+        # 1. The core RAG engine for retrieval and generation
+        rag_engine = RAGQueryEngine(
+            chroma_persist_directory=args.db_path,
+            prompt_template_path=args.prompt_template,
+            llm_model=args.llm_model,
+            relevance_score_threshold=args.relevance_threshold,
         )
 
-        # Show stats if requested
-        if args.stats:
-            stats = query_engine.get_database_stats()
-            print("\nDatabase Statistics:")
-            print(f"Total chunks: {stats.get('total_chunks', 0)}")
-            print(f"Collection name: {stats.get('collection_name', 'unknown')}")
-            print(f"Source distribution: {stats.get('source_distribution', {})}")
-            query_engine.close()
-            return 0
+        # 2. The memory system for conversation history
+        conversation_memory = SqliteConversationMemory(db_path=args.memory_db_path)
 
-        print("DeSi - RAG Query Engine")
-        print("Type 'quit' or 'exit' to stop, 'stats' to show database statistics")
-        print("-" * 50)
+        # 3. A separate LLM instance for the query rewriting task
+        rewrite_llm = ChatOllama(model=args.llm_model)
 
-        while True:
-            try:
-                # Get user input
-                query = input("\nYour question: ").strip()
+        # 4. The main chatbot engine that orchestrates everything
+        chatbot = ChatbotEngine(
+            rag_engine=rag_engine,
+            memory=conversation_memory,
+            rewrite_llm=rewrite_llm,
+        )
 
-                if not query:
-                    continue
-
-                if query.lower() in ['quit', 'exit', 'q']:
-                    break
-
-                if query.lower() == 'stats':
-                    stats = query_engine.get_database_stats()
-                    print(f"\nDatabase Statistics:")
-                    print(f"Total chunks: {stats.get('total_chunks', 0)}")
-                    print(f"Collection name: {stats.get('collection_name', 'unknown')}")
-                    print(f"Source distribution: {stats.get('source_distribution', {})}")
-                    continue
-
-                # Process the query
-                print("\nProcessing your question...")
-                answer, relevant_chunks = query_engine.query(query, top_k=args.top_k)
-
-                # Display the answer
-                print(f"\nAnswer:")
-                print(answer)
-
-                # Display relevant chunks if verbose
-                if args.verbose and relevant_chunks:
-                    print(f"\nRelevant chunks used ({len(relevant_chunks)}):")
-                    for i, chunk in enumerate(relevant_chunks, 1):
-                        source = chunk.get('source', 'unknown')
-                        title = chunk.get('title', 'Unknown')
-                        similarity = chunk.get('similarity_score', 0)
-                        print(f"{i}. [{source.upper()}] {title} (similarity: {similarity:.3f})")
-
-            except KeyboardInterrupt:
-                print("\nGoodbye!")
-                break
-            except Exception as e:
-                logger.error(f"Error processing query: {e}")
-                print(f"Error: {e}")
-
-        # Close the query engine
-        query_engine.close()
-        return 0
+        # --- Start the interactive session ---
+        chatbot.start_chat_session()
 
     except Exception as e:
-        logger.error(f"Error initializing query engine: {e}")
-        return 1
-
-
-def main():
-    """Main entry point for the script."""
-    args = parse_args()
-    return run_with_args(args)
+        logger.error(f"Failed to initialize and run the chatbot: {e}", exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

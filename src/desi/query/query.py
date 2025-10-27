@@ -20,9 +20,6 @@ from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 
 # --- Basic Configuration ---
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 

@@ -10,7 +10,7 @@ import requests
 # Adjust the path if your 'src' directory is located elsewhere relative to the project root
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from desi.scraper.openbis_scraper import scrape_and_find_links
+from desi.scraper.openbis_scraper import OpenbisScraper
 
 # --- Test Data and Mocks ---
 
@@ -94,7 +94,7 @@ def mock_requests_get(mocker):
 # --- Unit Tests ---
 
 
-def test_scrape_single_page_success(mock_requests_get, tmp_path):
+def test_scrape_single_page_success(tmp_path):
     """
     Tests that the scraper can download and correctly save a single page.
     """
@@ -102,8 +102,8 @@ def test_scrape_single_page_success(mock_requests_get, tmp_path):
 
     # Run the scraper on the temporary directory provided by pytest
     with patch("time.sleep", return_value=None):  # Mock sleep to speed up test
-        scrape_and_find_links(base_url, str(tmp_path))
-
+        scraper = OpenbisScraper(base_url=base_url, output_dir=str(tmp_path))
+        scraper.scrape()
     # Assertions
     expected_file = tmp_path / "en_20.10.0-11.md"
     assert expected_file.exists()
@@ -114,14 +114,15 @@ def test_scrape_single_page_success(mock_requests_get, tmp_path):
     assert "Other content we should ignore" not in content  # Should not scrape sidebar
 
 
-def test_scrape_crawls_to_second_page(mock_requests_get, tmp_path):
+def test_scrape_crawls_to_second_page(tmp_path):
     """
     Tests that the scraper follows an internal link found on the first page.
     """
     base_url = "https://openbis.readthedocs.io/en/20.10.0-11/"
 
     with patch("time.sleep", return_value=None):
-        scrape_and_find_links(base_url, str(tmp_path))
+        scraper = OpenbisScraper(base_url=base_url, output_dir=str(tmp_path))
+        scraper.scrape()
 
     # Assert that both the home page and the details page were scraped and saved
     assert (tmp_path / "en_20.10.0-11.md").exists()
@@ -140,7 +141,8 @@ def test_ignores_external_and_visited_links(mock_requests_get, tmp_path):
     base_url = "https://openbis.readthedocs.io/en/20.10.0-11/"
 
     with patch("time.sleep", return_value=None):
-        scrape_and_find_links(base_url, str(tmp_path))
+        scraper = OpenbisScraper(base_url=base_url, output_dir=str(tmp_path))
+        scraper.scrape()
 
     # The mock is configured to only know about the 'home' and 'details' URLs.
     # If it tries to access example.com, the mock would fail.
@@ -149,7 +151,7 @@ def test_ignores_external_and_visited_links(mock_requests_get, tmp_path):
     assert mock_requests_get.call_count == 2
 
 
-def test_handles_request_exception_gracefully(mock_requests_get, tmp_path):
+def test_handles_request_exception_gracefully(tmp_path):
     """
     Tests that a network error on one page does not stop the entire process.
     """
@@ -157,7 +159,10 @@ def test_handles_request_exception_gracefully(mock_requests_get, tmp_path):
     error_urls = {base_url, "https://openbis.readthedocs.io/en/20.10.0-11/error.html"}
     # Manually add the error URL to the list of pages to visit
     with patch("time.sleep", return_value=None):
-        scrape_and_find_links(base_url, str(tmp_path), initial_urls=error_urls)
+        scraper = OpenbisScraper(
+            base_url=base_url, output_dir=str(tmp_path), initial_urls=error_urls
+        )
+        scraper.scrape()
 
     # The scraper should log an error but continue.
     # The successful page should exist, but the error page should not.
@@ -165,7 +170,7 @@ def test_handles_request_exception_gracefully(mock_requests_get, tmp_path):
     assert not (tmp_path / "en_20.10.0-11_error.html.md").exists()
 
 
-def test_handles_page_without_main_content(mock_requests_get, tmp_path):
+def test_handles_page_without_main_content(tmp_path):
     """
     Tests that no file is created for a page that lacks the main content div.
     """
@@ -175,7 +180,10 @@ def test_handles_page_without_main_content(mock_requests_get, tmp_path):
     no_main_urls = {url_no_main}
 
     with patch("time.sleep", return_value=None):
-        scrape_and_find_links(base_url, str(tmp_path), initial_urls=no_main_urls)
+        scraper = OpenbisScraper(
+            base_url=base_url, output_dir=str(tmp_path), initial_urls=no_main_urls
+        )
+        scraper.scrape()
 
     # Assertions are unchanged
     assert len(list(tmp_path.iterdir())) == 0

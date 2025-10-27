@@ -13,8 +13,7 @@ env:
   UV_SYSTEM_PYTHON: true
 
 jobs:
-  # Job to run linting, formatting, and type checks.
-  # This job now runs in PARALLEL with the test-and-coverage job.
+  # Job to run linting and formatting checks.
   checks:
     runs-on: ubuntu-latest
     steps:
@@ -46,13 +45,8 @@ jobs:
       - name: Run Ruff Formatter Check
         run: ruff format --check src tests
 
-  #    - name: Run MyPy
-  #      run: mypy src
-
   # Job to run tests across multiple Python versions and report coverage
-  # This job now runs in PARALLEL with the checks job.
   test-and-coverage:
-    # The 'needs: lint-and-format' line has been REMOVED to allow parallel execution.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -80,22 +74,36 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-uv-
 
+      # Install main dependencies, plus 'coveralls' only on the 3.12 job
       - name: Install dependencies with uv
-        run: uv pip install -e '.[dev]'
-
-      - name: Run tests with pytest and generate coverage report
         run: |
-          # --cov=... : Specifies which directories to measure coverage for.
-          # --cov-report=xml : Creates the coverage.xml file needed by Coveralls.
-          pytest --cov=src/desi/processor --cov-report=xml
+          uv pip install -e '.[dev]'
+          if [[ "${{ matrix.python-version }}" == "3.12" ]]; then
+            uv pip install coveralls
+          fi
 
-      # This step will only run on the Python 3.12 job to avoid uploading
-      # coverage from multiple jobs in the matrix.
-      - name: Upload coverage reports to Coveralls
+      # Run tests on all versions. On 3.12, also generate the coverage report.
+      - name: Run tests with pytest
+        run: |
+          if [[ "${{ matrix.python-version }}" == "3.12" ]]; then
+            pytest --cov=src/desi/processor --junitxml=pytest.xml | tee pytest-coverage.txt
+          else
+            pytest
+          fi
+
+      # The following steps now ONLY run on the Python 3.12 job
+      - name: Post pytest coverage comment on PR
         if: matrix.python-version == '3.12'
-        uses: coverallsapp/github-action@v2
+        uses: MishaKav/pytest-coverage-comment@main
         with:
-          # The GITHUB_TOKEN is automatically provided by GitHub Actions.
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          # The file path must match the output from the pytest command.
-          file: ./coverage.xml
+          pytest-coverage-path: ./pytest-coverage.txt
+          junitxml-path: ./pytest.xml
+
+      - name: Submit coverage report to Coveralls
+        if: matrix.python-version == '3.12'
+        # This is the simple, direct upload method from your old working file.
+        # NO parallel logic.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          coveralls --service=github

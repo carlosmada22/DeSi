@@ -3,9 +3,10 @@
 Main entry point for DeSi.
 
 This script provides a complete workflow that can:
-1. Run scrapers (if data doesn't exist)
-2. Process the scraped data
-3. Start the query engine or web interface
+1. Check if ChromaDB database exists
+2. If not, check if scraped data exists, if not run scrapers
+3. If scraped data exists but no database, run processors
+4. Start the query engine (CLI mode)
 """
 
 import argparse
@@ -16,15 +17,32 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 # Import modules that will be used in functions
-from desi.__main__ import main as scraper_main
-from desi.processor.unified_processor import UnifiedProcessor
-from desi.query.conversation_engine import DesiConversationEngine
+from langchain_community.chat_models import ChatOllama
+
+from desi.processor import DsWikiProcessor, OpenBisProcessor
+from desi.query.conversation_engine import ChatbotEngine, SqliteConversationMemory
+from desi.query.query import RAGQueryEngine
+from desi.scraper import OpenbisScraper
 from desi.utils.config import DesiConfig
 from desi.utils.logging import setup_logging
-from desi.web.app import create_app
+
+# from desi.web.app import create_app  # Disabled for now
 
 # Configure logging
 logger = setup_logging()
+
+
+def check_chromadb_exists(config: DesiConfig) -> bool:
+    """Check if ChromaDB database already exists."""
+    project_root = Path(__file__).parent
+    chroma_dir = project_root / config.db_path
+
+    # Check if ChromaDB directory exists and has the required files
+    return (
+        chroma_dir.exists()
+        and (chroma_dir / "chroma.sqlite3").exists()
+        and len(list(chroma_dir.glob("*"))) > 1  # More than just the sqlite file
+    )
 
 
 def check_scraped_data(config: DesiConfig) -> bool:
@@ -50,8 +68,13 @@ def run_scrapers(config: DesiConfig) -> bool:
     """Run the scrapers to collect data."""
     logger.info("🕷️  Running scrapers...")
     try:
-        result = scraper_main()
-        return result == 0
+        openbis_scraper = OpenbisScraper(
+            base_url=config.openbis_url,
+            output_dir=f"{config.data_dir}/raw/openbis",
+        )
+        openbis_scraper.scrape()
+        logger.info("Scraping complete")
+        return True
     except Exception as e:
         logger.error(f"Scraping failed: {e}")
         return False
@@ -61,26 +84,23 @@ def run_processor(config: DesiConfig) -> bool:
     """Run the processor to create embeddings and vector database."""
     logger.info("⚙️  Running processor...")
     try:
-        project_root = Path(__file__).parent
-        input_dir = project_root / config.data_dir / "raw"
-        output_dir = project_root / config.processed_data_dir
-        chroma_dir = project_root / config.db_path
-
-        processor = UnifiedProcessor(
-            input_dir=str(input_dir),
-            output_dir=str(output_dir),
-            min_chunk_size=config.min_chunk_size,
-            max_chunk_size=config.max_chunk_size,
-            chunk_overlap=config.chunk_overlap,
-            generate_embeddings=True,
-            chroma_dir=str(chroma_dir),
-            collection_name=config.collection_name,
+        # Instantiate and run the processors directly
+        dswiki_processor = DsWikiProcessor(
+            root_directory=f"{config.data_dir}/raw/wikijs",
+            output_directory=f"{config.processed_data_dir}/wikijs",
+            chroma_persist_directory=config.db_path,
         )
+        dswiki_processor.process()
 
-        stats = processor.process(output_format="both", build_chromadb=True)
-        logger.info(f"Processing complete: {stats}")
-        return stats["total_chunks"] > 0
+        openbis_processor = OpenBisProcessor(
+            root_directory=f"{config.data_dir}/raw/openbis",
+            output_directory=f"{config.processed_data_dir}/openbis",
+            chroma_persist_directory=config.db_path,
+        )
+        openbis_processor.process()
 
+        logger.info("Processing complete")
+        return True
     except Exception as e:
         logger.error(f"Processing failed: {e}")
         return False
@@ -93,89 +113,40 @@ def run_query_interface(config: DesiConfig) -> None:
         project_root = Path(__file__).parent
         db_path = str(project_root / config.db_path)
         memory_db_path = str(project_root / config.memory_db_path)
+        prompt_template_path = str(project_root / "prompts" / "desi_query_prompt.md")
 
-        engine = DesiConversationEngine(
-            db_path=db_path,
-            collection_name=config.collection_name,
-            model=config.model_name,
-            memory_db_path=memory_db_path,
-            retrieval_top_k=config.retrieval_top_k,
+        # Initialize the RAG engine
+        rag_engine = RAGQueryEngine(
+            chroma_persist_directory=db_path,
+            prompt_template_path=prompt_template_path,
+            embedding_model=config.embedding_model_name,
+            llm_model=config.model_name,
+        )
+
+        # Initialize conversation memory
+        memory = SqliteConversationMemory(
+            db_path=memory_db_path,
             history_limit=config.history_limit,
+        )
+
+        # Initialize rewrite LLM
+        rewrite_llm = ChatOllama(model=config.model_name)
+
+        # Initialize the chatbot engine
+        engine = ChatbotEngine(
+            rag_engine=rag_engine,
+            memory=memory,
+            rewrite_llm=rewrite_llm,
         )
 
         print("\n" + "=" * 60)
         print("🤖 DeSi - Your openBIS and DataStore Assistant")
         print("=" * 60)
-        print("Type 'quit', 'exit', or 'bye' to end the conversation.")
-        print("Type 'help' for available commands.")
+        print("Type 'exit' to end the conversation.")
         print("=" * 60 + "\n")
 
-        session_id = None
-
-        while True:
-            try:
-                user_input = input("You: ").strip()
-
-                if not user_input:
-                    continue
-
-                if user_input.lower() in ["quit", "exit", "bye"]:
-                    print("👋 Goodbye!")
-                    break
-
-                if user_input.lower() == "help":
-                    print("\nAvailable commands:")
-                    print("  help     - Show this help message")
-                    print("  stats    - Show database statistics")
-                    print("  clear    - Clear conversation memory")
-                    print("  new      - Start a new conversation session")
-                    print("  quit/exit/bye - Exit the program")
-                    print()
-                    continue
-
-                if user_input.lower() == "stats":
-                    stats = engine.get_database_stats()
-                    print("\n📊 Database Statistics:")
-                    for key, value in stats.items():
-                        print(f"  {key}: {value}")
-                    print()
-                    continue
-
-                if user_input.lower() == "clear":
-                    if session_id:
-                        engine.clear_session_memory(session_id)
-                        print("🧹 Conversation memory cleared.")
-                    else:
-                        print("No active session to clear.")
-                    print()
-                    continue
-
-                if user_input.lower() == "new":
-                    session_id = None
-                    print("🆕 Starting new conversation session.")
-                    print()
-                    continue
-
-                # Process the query
-                response, session_id, metadata = engine.chat(user_input, session_id)
-
-                print(f"\nDeSi: {response}")
-
-                # Show metadata if verbose
-                if metadata.get("rag_chunks_used", 0) > 0:
-                    print(
-                        f"\n📚 Used {metadata['rag_chunks_used']} documentation chunks"
-                    )
-                print()
-
-            except KeyboardInterrupt:
-                print("\n👋 Goodbye!")
-                break
-            except Exception as e:
-                logger.error(f"Error in query interface: {e}")
-                print(f"❌ Error: {e}")
-
-        engine.close()
+        # Use the existing chat session method
+        engine.start_chat_session()
 
     except Exception as e:
         logger.error(f"Failed to start query interface: {e}")
@@ -183,31 +154,9 @@ def run_query_interface(config: DesiConfig) -> None:
 
 
 def run_web_interface(config: DesiConfig) -> None:
-    """Run the web interface."""
-    logger.info("🌐 Starting web interface...")
-    try:
-        project_root = Path(__file__).parent
-        db_path = str(project_root / config.db_path)
-
-        app = create_app(
-            db_path=db_path,
-            collection_name=config.collection_name,
-            model=config.model_name,
-        )
-
-        # Update Flask configuration
-        app.config["SECRET_KEY"] = config.secret_key
-
-        print(
-            f"\n🌐 Starting DeSi web interface at http://{config.web_host}:{config.web_port}"
-        )
-        print("Press Ctrl+C to stop the server")
-
-        app.run(host=config.web_host, port=config.web_port, debug=config.web_debug)
-
-    except Exception as e:
-        logger.error(f"Failed to start web interface: {e}")
-        sys.exit(1)
+    """Run the web interface (placeholder - not implemented yet)."""
+    logger.info("🌐 Web interface not implemented yet, starting CLI interface...")
+    run_query_interface(config)
 
 
 def main():
@@ -248,54 +197,53 @@ def main():
     logger.info("🚀 Starting DeSi pipeline...")
     logger.info(f"Configuration: {config.to_dict()}")
 
-    # Step 1: Check and run scrapers if needed
-    if not args.skip_scraping:
-        has_data = check_scraped_data(config)
+    # Step 1: Check if ChromaDB database exists
+    has_chromadb = check_chromadb_exists(config)
 
-        if not has_data or args.force_scraping:
-            if not has_data:
-                logger.info("📂 No scraped data found, running scrapers...")
-            else:
-                logger.info("🔄 Force scraping requested...")
-
-            if not run_scrapers(config):
-                logger.error("❌ Scraping failed!")
-                sys.exit(1)
-        else:
-            logger.info("✅ Scraped data already exists, skipping scraping")
+    if has_chromadb and not args.force_processing and not args.force_scraping:
+        logger.info("✅ ChromaDB database already exists, starting query interface...")
     else:
-        logger.info("⏭️  Skipping scraping as requested")
+        if not has_chromadb:
+            logger.info("📊 No ChromaDB database found, need to process data...")
 
-    # Step 2: Check and run processor if needed
-    if not args.skip_processing:
-        project_root = Path(__file__).parent
-        chroma_dir = project_root / config.db_path
-        processed_dir = project_root / config.processed_data_dir
+        # Step 2: Check and run scrapers if needed
+        if not args.skip_scraping:
+            has_data = check_scraped_data(config)
 
-        has_processed_data = (
-            chroma_dir.exists()
-            and (chroma_dir / "chroma.sqlite3").exists()
-            and processed_dir.exists()
-            and len(list(processed_dir.glob("*.json"))) > 0
-        )
+            if not has_data or args.force_scraping:
+                if not has_data:
+                    logger.info("📂 No scraped data found, running scrapers...")
+                else:
+                    logger.info("🔄 Force scraping requested...")
 
-        if not has_processed_data or args.force_processing:
-            if not has_processed_data:
-                logger.info("📊 No processed data found, running processor...")
+                if not run_scrapers(config):
+                    logger.error("❌ Scraping failed!")
+                    sys.exit(1)
             else:
-                logger.info("🔄 Force processing requested...")
-
-            if not run_processor(config):
-                logger.error("❌ Processing failed!")
-                sys.exit(1)
+                logger.info("✅ Scraped data already exists, skipping scraping")
         else:
-            logger.info("✅ Processed data already exists, skipping processing")
-    else:
-        logger.info("⏭️  Skipping processing as requested")
+            logger.info("⏭️  Skipping scraping as requested")
 
-    # Step 3: Start the interface
+        # Step 3: Check and run processor if needed
+        if not args.skip_processing:
+            if not has_chromadb or args.force_processing:
+                if not has_chromadb:
+                    logger.info("📊 No ChromaDB database found, running processor...")
+                else:
+                    logger.info("🔄 Force processing requested...")
+
+                if not run_processor(config):
+                    logger.error("❌ Processing failed!")
+                    sys.exit(1)
+            else:
+                logger.info("✅ ChromaDB database already exists, skipping processing")
+        else:
+            logger.info("⏭️  Skipping processing as requested")
+
+    # Step 4: Start the interface
     if args.web:
-        run_web_interface(config)
+        logger.info("🌐 Web interface not implemented yet, starting CLI interface...")
+        run_query_interface(config)
     else:
         run_query_interface(config)
 

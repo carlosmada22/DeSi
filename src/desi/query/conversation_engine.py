@@ -16,12 +16,9 @@ from langchain_community.chat_models import ChatOllama
 from langgraph.graph import END, StateGraph
 
 # Import the RAG engine from your existing query.py file
-from query import OLLAMA_AVAILABLE, RAGQueryEngine
+from .query import OLLAMA_AVAILABLE, RAGQueryEngine
 
 # --- Basic Configuration ---
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 
@@ -327,9 +324,9 @@ if __name__ == "__main__":
     SQLITE_DB_PATH = "./data/conversation_memory.db"
     CONVERSATION_HISTORY_LIMIT = 20
     # Value for boosting dswiki chunks
-    DSWIKI_BOOST_VALUE = 0.15
+    DSWIKI_BOOST_VALUE = 0.2
     # A score of 0.7 means we discard any chunk with less than 70% similarity.
-    RELEVANCE_THRESHOLD = 0.6
+    RELEVANCE_THRESHOLD = 0.7
     # The model used by your RAG engine
     LLM_MODEL = "qwen3"
 
