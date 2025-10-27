@@ -53,7 +53,7 @@ class DesiConfig:
     @property
     def memory_db_path(self) -> str:
         """Path to SQLite conversation memory database."""
-        return os.getenv("DESI_MEMORY_DB_PATH", "desi_conversation_memory.db")
+        return os.getenv("DESI_MEMORY_DB_PATH", "data/conversation_memory.db")
 
     # Model Configuration
     @property
