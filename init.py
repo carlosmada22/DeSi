@@ -6,77 +6,75 @@ This script helps users set up DeSi by checking prerequisites,
 installing dependencies, and running initial tests.
 """
 
+import logging
 import os
-import subprocess
+import shutil
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+import requests
 
 
 def check_python_version():
     """Check if Python version is compatible."""
-    print("Checking Python version...")
+    logger.info("Checking Python version...")
     # Minimum supported Python version is 3.8; this script assumes it's running on 3.8+
-    print(
-        f"✓ Python {sys.version_info.major}.{sys.version_info.minor} detected (requires 3.8+)"
+    logger.info(
+        f"Python {sys.version_info.major}.{sys.version_info.minor} detected (requires 3.8+)"
     )
     return True
 
 
 def check_ollama():
-    """Check if Ollama is installed and running."""
-    print("Checking Ollama installation...")
+    """
+    Check if the Ollama service is accessible and has the required models.
+    """
+    logger.info("Checking Ollama accessibility and models...")
+    required_models = ["qwen3", "nomic-embed-text"]
+    ollama_api_url = "http://localhost:11434/api/tags"
+
     try:
-        result = subprocess.run(
-            ["ollama", "list"], check=False, capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            print("✓ Ollama is installed and running")
+        response = requests.get(ollama_api_url, timeout=5)
+        response.raise_for_status()
+        logger.info("Ollama server is accessible.")
 
-            # Check for required models
-            models = result.stdout
-            required_models = ["qwen3", "nomic-embed-text"]
-            missing_models = []
+        data = response.json()
+        # Get a list of the full model names, e.g., ['qwen3:latest', 'nomic-embed-text:latest']
+        installed_models = [model["name"] for model in data.get("models", [])]
 
-            for model in required_models:
-                if model not in models:
-                    missing_models.append(model)
+        missing_models = []
+        for required in required_models:
+            # Check if any installed model *starts with* the required name.
+            # This correctly handles tags like ':latest', ':7b', etc.
+            if not any(
+                installed.startswith(required) for installed in installed_models
+            ):
+                missing_models.append(required)
 
-            if missing_models:
-                print(f"⚠️  Missing required models: {', '.join(missing_models)}")
-                print("You can install them with:")
-                for model in missing_models:
-                    print(f"  ollama pull {model}")
-                return False
-            else:
-                print("✓ Required Ollama models are available")
-                return True
+        if not missing_models:
+            logger.info("✓ Required Ollama models are available.")
+            return True
         else:
-            print("❌ Ollama is not running")
+            logger.info(f"Missing required models: {', '.join(missing_models)}")
+            logger.info("You can install them with:")
+            for model in missing_models:
+                logger.info(f"  ollama pull {model}")
             return False
-    except FileNotFoundError:
-        print("❌ Ollama is not installed")
-        print("Please install Ollama from https://ollama.com/download")
+
+    except requests.exceptions.ConnectionError:
+        logger.info("Ollama server is not accessible at http://localhost:11434.")
+        logger.info("   Please ensure the Ollama application or service is running.")
         return False
-
-
-def install_dependencies():
-    """Install Python dependencies."""
-    print("Installing Python dependencies...")
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-e", "."],
-            check=True,
-        )
-        print("✓ Dependencies installed successfully")
-        return True
-    except subprocess.CalledProcessError:
-        print("❌ Failed to install dependencies")
+    except requests.exceptions.RequestException as e:
+        logger.info(f"Failed to query the Ollama API: {e}")
         return False
 
 
 def run_basic_tests():
     """Run basic functionality tests."""
-    print("Running basic functionality tests...")
+    logger.info("Running basic functionality tests...")
     try:
         # Add src to path
         sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -84,19 +82,19 @@ def run_basic_tests():
         # Test imports with the NEW class-based structure
         from desi.processor import DsWikiProcessor, OpenBisProcessor
         from desi.query import ChatbotEngine, RAGQueryEngine, SqliteConversationMemory
-        from desi.scraper import OpenbisScraper  # Assuming this is your scraper class
+        from desi.scraper import OpenbisScraper
         from desi.utils import DesiConfig, setup_logging
 
-        print("✓ All modules import successfully")
+        logger.info("✓ All modules import successfully")
         return True
     except ImportError as e:
-        print(f"❌ Import error: {e}")
+        logger.info(f"Import error: {e}")
         return False
 
 
 def create_directories():
     """Create necessary directories."""
-    print("Creating directory structure...")
+    logger.info("Creating directory structure...")
     directories = [
         "data/raw/openbis",
         "data/raw/wikijs",
@@ -108,63 +106,89 @@ def create_directories():
     for directory in directories:
         Path(directory).mkdir(parents=True, exist_ok=True)
 
-    print("✓ Directory structure created")
+    logger.info("✓ Directory structure created")
     return True
+
+
+def create_env_file() -> bool:
+    """
+    Creates a .env file from .env.example if it doesn't already exist.
+    """
+    logger.info("Checking for .env file...")
+    source_file = Path(".env.example")
+    dest_file = Path(".env")
+
+    # Safety check: Do not overwrite an existing .env file.
+    if dest_file.exists():
+        logger.info("✓ .env file already exists. Skipping creation.")
+        return True
+
+    # Check if the template file exists before trying to copy.
+    if not source_file.exists():
+        logger.info("Warning: .env.example file not found. Cannot create .env.")
+        logger.info("   Please ensure .env.example is in the project root.")
+        return False  # This step failed.
+
+    try:
+        shutil.copyfile(source_file, dest_file)
+        logger.info(f"Created '{dest_file}' from '{source_file}'.")
+        logger.info(
+            "   You can now customize the variables in the .env file if needed."
+        )
+        return True
+    except Exception as e:
+        logger.info(f"Failed to create .env file: {e}")
+        return False
 
 
 def main():
     """Main setup function."""
-    print("DeSi Helper Setup")
-    print("=" * 50)
+    logger.info("DeSi Helper Setup")
+    logger.info("=" * 50)
 
-    # Change to the script directory
     os.chdir(Path(__file__).parent)
 
     checks = [
         ("Python Version", check_python_version),
-        # ("Ollama Installation", check_ollama),
-        ("Python Dependencies", install_dependencies),
+        ("Ollama", check_ollama),
         ("Basic Tests", run_basic_tests),
         ("Directory Structure", create_directories),
     ]
-
+    # ... rest of the main function is unchanged ...
     results = []
     for check_name, check_func in checks:
-        print(f"\n--- {check_name} ---")
+        logger.info(f"\n--- {check_name} ---")
         try:
             result = check_func()
             results.append((check_name, result))
             if not result:
-                print(f"Setup failed at: {check_name}")
+                logger.info(f"Setup failed at: {check_name}")
                 break
         except Exception as e:
-            print(f"❌ {check_name} failed with error: {e}")
+            logger.info(f"❌ {check_name} failed with error: {e}")
             results.append((check_name, False))
             break
 
-    # Summary
-    print("\n" + "=" * 50)
-    print("SETUP SUMMARY")
-    print("=" * 50)
+    logger.info("\n" + "=" * 50)
+    logger.info("SETUP SUMMARY")
+    logger.info("=" * 50)
 
     passed = 0
     for check_name, result in results:
         status = "PASS" if result else "FAIL"
-        print(f"{check_name}: {status}")
+        logger.info(f"{check_name}: {status}")
         if result:
             passed += 1
 
     if passed == len(checks):
-        print("\n🎉 Setup completed successfully!")
-        print("\nNext steps:")
-        print("1. Configure URLs in .env file (optional)")
-        print("2. Run integration test: python scripts/integration_test.py")
-        print("3. Run full pipeline: python main.py")
-        print("4. Web interface: python main.py --web (placeholder, uses CLI for now)")
-        return 0
+        logger.info("\n🎉 Setup completed successfully!")
+        logger.info("\nNext steps:")
+        logger.info("1. Configure URLs in .env file (optional)")
+        logger.info("2. Run integration test: python scripts/integration_test.py")
+        logger.info("3. Run full pipeline: python main.py")
     else:
-        print(f"\n❌ Setup incomplete. {passed}/{len(checks)} checks passed.")
-        print("Please resolve the issues above and run setup again.")
+        logger.info(f"\n❌ Setup incomplete. {passed}/{len(checks)} checks passed.")
+        logger.info("Please resolve the issues above and run setup again.")
         return 1
 
 
