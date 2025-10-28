@@ -84,7 +84,7 @@ graph TD
     B -->|Yes| H[Query Interface]
     C -->|No| D[Run Scrapers]
     C -->|Yes| F[Run Processors]
-    D --> E[OpenBIS + Wiki.js Scraping]
+    D --> E[OpenBIS Scraping]
     E --> F[Content Processing]
     F --> G[Generate Embeddings & Store in ChromaDB]
     G --> H[Query Interface]
