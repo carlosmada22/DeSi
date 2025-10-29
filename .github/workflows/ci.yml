@@ -1,9 +1,13 @@
-name: Installing and Testing
-on: [push]
+name: CI Pipeline
 
-# https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs
-# `contents` is for permission to the contents of the repository.
-# `pull-requests` is for permission to pull request
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
 permissions:
   contents: write
   checks: write
@@ -13,32 +17,84 @@ env:
   UV_SYSTEM_PYTHON: true
 
 jobs:
-  install-and-test:
+  linting-and-formatting:
+    name: Ruff Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ruff Check
+        uses: chartboost/ruff-action@v1
+        with:
+          args: "check ."
+      - name: Ruff Format Check
+        uses: chartboost/ruff-action@v1
+        with:
+          args: "format . --check"
+
+  unit-tests-and-coverage:
+    name: Unit Tests, Mypy & Coverage (Python ${{ matrix.python_version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python_version: ["3.10", "3.11", "3.12"]
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{matrix.python_version}}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{matrix.python_version}}
-    - name: Install uv
-      run: |
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-    - name: Install dependencies
-      run: |
-        pip install --upgrade pip
-        uv pip install -e '.[dev]'
-    # - name: mypy
-    #   run: |
-    #     python -m mypy --ignore-missing-imports --follow-imports=silent --no-strict-optional bam_masterdata tests
-    - name: Test with pytest
-      run: |
-        python -m pytest -sv --ignore=tests/cli --ignore=tests/metadata/test_entities_dict.py tests
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{matrix.python_version}}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{matrix.python_version}}
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Install dependencies
+        run: |
+          uv pip install -e '.[dev]'
+          uv pip install coveralls
+      
+      - name: Mypy Type Checking
+        run: |
+          python -m mypy --ignore-missing-imports --follow-imports=silent --no-strict-optional src/desi tests
+
+      - name: Run Unit Tests & Build coverage file
+        run: |
+          pytest --cov-config=.coveragerc --junitxml=pytest.xml --cov=src/desi -m "not integration" --ignore=tests/cli --ignore=tests/metadata/test_entities_dict.py tests | tee pytest-coverage.txt
+      
+      - name: Pytest coverage comment
+        if: matrix.python_version == '3.12'
+        uses: MishaKav/pytest-coverage-comment@main
+        with:
+          pytest-coverage-path: pytest-coverage.txt
+          junitxml-path: pytest.xml
+      - name: Submit to coveralls
+        if: matrix.python_version == '3.12'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          coveralls --service=github
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [linting-and-formatting, unit-tests-and-coverage]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.12
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Install dependencies
+        run: uv pip install -e '.[dev]'
+      - name: Run Integration Tests
+        run: |
+          python -m pytest -sv -m "integration" tests/
+
   build-and-install:
+    name: Build and Install
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -56,17 +112,3 @@ jobs:
     - name: Install the package
       run: |
         uv pip install dist/*.tar.gz
-  ruff-linting:
-      runs-on: ubuntu-latest
-      steps:
-        - uses: actions/checkout@v4
-        - uses: chartboost/ruff-action@v1
-          with:
-            args: "check ."
-  ruff-formatting:
-      runs-on: ubuntu-latest
-      steps:
-        - uses: actions/checkout@v4
-        - uses: chartboost/ruff-action@v1
-          with:
-            args: "format . --check --verbose"
