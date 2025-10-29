@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from bs4 import BeautifulSoup
 
 # Add the src directory to the path to ensure imports work correctly
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -53,9 +54,7 @@ def test_full_pipeline_integration(tmp_path: Path):
         try:
             response = scraper._fetch_page(current_url)
             scraper.visited.add(current_url)
-            soup = scraper._soupify(
-                response.content
-            )  # Assuming _soupify exists or is part of a parent class
+            soup = BeautifulSoup(response.content, "lxml")
 
             scraper._save_content_as_markdown(soup, current_url)
             scraper._find_new_links(soup, current_url)

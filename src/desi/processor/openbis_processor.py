@@ -14,11 +14,12 @@ import os
 import re
 import textwrap
 from pathlib import Path
-from typing import List
+from typing import List, Set
 
-from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_community.vectorstores.utils import filter_complex_metadata
+from langchain_core.documents import Document
+from langchain_ollama import OllamaEmbeddings
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -43,18 +44,6 @@ try:
 except ImportError:
     logger.warning("Langchain Ollama package not available. Using dummy embeddings.")
     OLLAMA_AVAILABLE = False
-
-
-# --- Helper Class for Storing Chunks (from ds_processor) ---
-class Document:
-    def __init__(self, page_content, metadata):
-        self.page_content = page_content
-        self.metadata = metadata
-
-    def __repr__(self):
-        metadata_str = ", ".join(f"{k}='{v}'" for k, v in self.metadata.items())
-        content_preview = self.page_content[:200].strip().replace("\n", " ")
-        return f"Document(page_content='{content_preview}...', metadata={{{metadata_str}}})"
 
 
 class CustomJSONEncoder(json.JSONEncoder):
@@ -324,7 +313,11 @@ class OpenBisProcessor:
         # Export to CSV
         csv_path = os.path.join(output_dir, "chunks_openbis.csv")
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            all_meta_keys = set().union(*(d["metadata"].keys() for d in data_to_export))
+            all_meta_keys: Set[str] = set()
+            for d in data_to_export:
+                metadata = d.get("metadata")
+                if isinstance(metadata, dict):
+                    all_meta_keys.update(metadata.keys())
 
             preferred_order = [
                 "id",
