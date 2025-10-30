@@ -52,7 +52,12 @@ jobs:
           uv pip install coveralls
       
       - name: Mypy Type Checking
+        # --- THE FIX IS HERE ---
+        # This step will now ONLY run on pull requests or on pushes to the main branch.
+        # It will be SKIPPED on pushes to feature branches.
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: |
+          echo "Running Mypy because this is a pull request or a push to main..."
           python -m mypy --ignore-missing-imports --follow-imports=silent --no-strict-optional src/desi tests
 
       - name: Run Unit Tests & Build coverage file

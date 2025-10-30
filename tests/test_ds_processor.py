@@ -6,7 +6,8 @@ from unittest.mock import mock_open, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# Add the src directory to the path to ensure imports work from the root
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from desi.processor.ds_processor import Document, DsWikiProcessor
 
@@ -44,6 +45,21 @@ graph TD;
     B-->C;
 ```
 More text after.
+"""
+
+
+@pytest.fixture
+def sample_faq_content():
+    """Provides sample HTML content structured like an FAQ with <details> tags."""
+    return """
+<details>
+  <summary>What is the first question?</summary>
+  This is the answer to the first question.
+</details>
+<details>
+  <summary>What is the second question?</summary>
+  <p>This is the answer to the second question, with more detail.</p>
+</details>
 """
 
 
@@ -115,6 +131,25 @@ def test_split_markdown_by_structure_creates_chunks():
     assert chunks[0].metadata["origin"] == "dswiki"
 
 
+def test_split_faq_style(sample_faq_content):
+    """Tests the FAQ chunking logic based on <details> HTML tags."""
+    metadata = {"source": "faq.md"}
+    chunks = DsWikiProcessor._split_faq_style(sample_faq_content, metadata)
+
+    assert len(chunks) == 2
+    # Verify content of the first chunk
+    assert "Question: What is the first question?" in chunks[0].page_content
+    assert "Answer: This is the answer to the first question." in chunks[0].page_content
+    assert chunks[0].metadata["faq_question"] == "What is the first question?"
+    # Verify content of the second chunk
+    assert "Question: What is the second question?" in chunks[1].page_content
+    assert (
+        "Answer: This is the answer to the second question, with more detail."
+        in chunks[1].page_content
+    )
+    assert chunks[1].metadata["faq_question"] == "What is the second question?"
+
+
 def test_chunk_document_integration(tmp_path):
     """An integration test for the main document chunking function."""
     # Create a fake directory structure
@@ -126,18 +161,56 @@ def test_chunk_document_integration(tmp_path):
         "---\ntitle: Integration Test\n---\n## A Section\n\nSome content here that is definitely long enough to pass the minimum length check after being processed."
     )
 
-    chunks = DsWikiProcessor._chunk_document(str(md_file), str(root_dir))
+    processor = DsWikiProcessor(
+        root_directory=str(root_dir),
+        output_directory="dummy_output",
+        chroma_persist_directory="dummy_chroma",
+    )
+
+    chunks = processor._chunk_document(str(md_file), str(root_dir))
 
     assert len(chunks) == 1
     chunk = chunks[0]
 
+    # --- Verify enriched metadata ---
     assert chunk.metadata["origin"] == "dswiki"
+    # Section name should be title-cased and cleaned
     assert chunk.metadata["section"] == "Use Cases"
+    # Source should be a clean, relative path with forward slashes
     assert chunk.metadata["source"] == "use_cases/my-test-file.md"
-
+    # ID should be derived from the source path
     assert chunk.metadata["id"] == "dswiki-use_cases-my-test-file"
-
-    assert (
-        "Integration Test" in chunk.metadata["title"]
-    )  # Assuming title is added in metadata
+    # Metadata from YAML should be preserved
+    assert chunk.metadata["title"] == "Integration Test"
+    # Content should be present and cleaned
     assert "Some content here" in chunk.page_content
+
+
+def test_process_all_markdown_files(mocker):
+    """Tests the file discovery and processing orchestration."""
+    mocker.patch("os.path.isdir", return_value=True)
+
+    # Mock os.walk to return a predictable directory structure
+    mocker.patch("os.walk").return_value = [
+        ("/fake_root", ("docs",), ("root.md",)),
+        ("/fake_root/docs", (), ("doc1.md", "doc2.txt")),
+    ]
+
+    # Patch the method on the CLASS before an instance is created.
+    mock_chunker = mocker.patch(
+        "desi.processor.ds_processor.DsWikiProcessor._chunk_document"
+    )
+    mock_chunker.return_value = [Document("chunk_content", {})]
+
+    # Now, create the instance. It will be created with the mocked method.
+    processor = DsWikiProcessor(
+        root_directory="/fake_root", output_directory="", chroma_persist_directory=""
+    )
+
+    # Run the function that calls the (now mocked) method
+    all_chunks = processor._process_all_markdown_files("/fake_root")
+
+    # We expect 2 calls because there are two .md files (root.md, doc1.md)
+    assert mock_chunker.call_count == 2
+    # We expect a total of 2 chunks since the mock returns one chunk per call
+    assert len(all_chunks) == 2
