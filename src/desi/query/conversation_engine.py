@@ -10,10 +10,11 @@ within a structured, extensible LangGraph graph.
 import logging
 import sqlite3
 import uuid
-from typing import Dict, List, TypedDict
+from typing import Dict, List, Tuple, TypedDict
 
 from langchain_community.chat_models import ChatOllama
 from langgraph.graph import END, StateGraph
+from langgraph.pregel import Pregel
 
 # Import the RAG engine from your existing query.py file
 from .query import OLLAMA_AVAILABLE, RAGQueryEngine
@@ -127,7 +128,7 @@ class ChatbotEngine:
         self.rag_engine = rag_engine
         self.memory = memory
         self.rewrite_llm = rewrite_llm
-        self.graph = self._build_graph()
+        self.graph: Pregel = self._build_graph()
         logger.info("ChatbotEngine with LangGraph workflow initialized.")
 
     def _format_history_for_prompt(self, history: List[Dict]) -> str:
@@ -207,7 +208,7 @@ Standalone Question:
 
         return {}  # No state update needed from this node
 
-    def _build_graph(self) -> StateGraph:
+    def _build_graph(self) -> Pregel:
         """
         Builds and compiles the LangGraph conversation workflow.
         """
@@ -227,7 +228,7 @@ Standalone Question:
         # Compile the graph into a runnable object
         return workflow.compile()
 
-    def chat(self, user_input: str, session_id: str) -> str:
+    def chat(self, user_input: str, session_id: str) -> Tuple[str, List[Dict]]:
         """
         Processes a single user message through the LangGraph workflow.
         """

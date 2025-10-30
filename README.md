@@ -312,10 +312,6 @@ DeSi/
 │       ├── cli.py                  # Web CLI interface
 │       ├── 📁 templates/           # HTML templates
 │       └── 📁 static/              # CSS, JS, images
-├── 📁 scripts/                     # Utility scripts
-│   ├── run_complete_pipeline.py    # End-to-end pipeline runner
-│   ├── integration_test.py         # Integration testing
-│   └── ingest_to_vectordb.py       # Direct vector DB ingestion
 ├── 📁 tests/                       # Unit and integration tests
 ├── 📁 data/                        # Data storage
 │   ├── 📁 raw/                     # Scraped raw content

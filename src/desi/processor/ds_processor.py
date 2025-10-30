@@ -306,7 +306,7 @@ class DsWikiProcessor:
         return chunks
 
     # --- Step 3: The "Smart Dispatcher" ---
-    def _chunk_document(self, file_path, root_directory):  # <-- Pass root_directory
+    def _chunk_document(self, file_path, root_directory):
         """
         Loads a document, enriches metadata, and routes it to the best splitting strategy.
         """

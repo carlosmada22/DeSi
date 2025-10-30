@@ -10,14 +10,14 @@ embedding and language model generation.
 
 import logging
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from langchain_community.chat_models import ChatOllama
-from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import Chroma
 
 # We import the Document class for type hinting, as Chroma returns this type
 from langchain_core.documents import Document
+from langchain_ollama import OllamaEmbeddings
 
 # --- Basic Configuration ---
 logger = logging.getLogger(__name__)
@@ -245,7 +245,7 @@ class RAGQueryEngine:
 
         try:
             response = self.llm.invoke(prompt)
-            raw_answer = response.content
+            raw_answer = str(response.content)
             cleaned_answer = re.sub(
                 r"<think>.*?</think>", "", raw_answer, flags=re.DOTALL
             )
@@ -255,7 +255,10 @@ class RAGQueryEngine:
             return "There was an error generating the answer."
 
     def query(
-        self, query: str, conversation_history: List[Dict] = None, top_k: int = 5
+        self,
+        query: str,
+        conversation_history: Optional[List[Dict]] = None,
+        top_k: int = 5,
     ) -> Tuple[str, List[Document]]:
         """
         Executes the full RAG pipeline for a given query.

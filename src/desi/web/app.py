@@ -8,13 +8,17 @@ through a browser-based chat interface.
 
 import json
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from flask import Flask, jsonify, render_template, request, session
 from flask_cors import CORS
+from langchain_community.chat_models import ChatOllama
 
-from ..query.conversation_engine import DesiConversationEngine
+from ..query.conversation_engine import ChatbotEngine, SqliteConversationMemory
+from ..query.query import RAGQueryEngine
 from ..utils.config import DesiConfig
 
 # Configure logging
@@ -37,30 +41,29 @@ else:
 conversation_engine = None
 
 
-def init_conversation_engine(
-    db_path: str, collection_name: str = None, model: str = None
-):
-    """Initialize the conversation engine."""
-    global conversation_engine
-    try:
-        # Use config defaults if not provided
-        collection_name = collection_name or config.collection_name
-        model = model or config.model_name
-        memory_db_path = str(Path(db_path).parent / config.memory_db_path)
+def init_conversation_engine():
+    """Initializes and returns the main ChatbotEngine."""
+    config = DesiConfig()
 
-        conversation_engine = DesiConversationEngine(
-            db_path=db_path,
-            collection_name=collection_name,
-            model=model,
-            memory_db_path=memory_db_path,
-            retrieval_top_k=config.retrieval_top_k,
-            history_limit=config.history_limit,
-        )
-        logger.info("Conversation engine initialized successfully")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to initialize conversation engine: {e}")
-        return False
+    # 1. Build the prerequisite objects
+    rag_engine = RAGQueryEngine(
+        chroma_persist_directory=config.db_path,
+        prompt_template_path="./prompts/desi_query_prompt.md",  # Assuming a default path
+        llm_model=config.model_name,
+    )
+
+    memory = SqliteConversationMemory(
+        db_path=config.memory_db_path, history_limit=config.history_limit
+    )
+
+    rewrite_llm = ChatOllama(model=config.model_name)
+
+    # 2. Now, create the ChatbotEngine with the objects it expects
+    global conversation_engine
+    conversation_engine = ChatbotEngine(
+        rag_engine=rag_engine, memory=memory, rewrite_llm=rewrite_llm
+    )
+    print("✅ Chatbot Engine initialized successfully.")
 
 
 @app.route("/")
@@ -216,10 +219,12 @@ def internal_error(error):
     return jsonify({"error": "Internal server error"}), 500
 
 
-def create_app(db_path: str, collection_name: str = None, model: str = None):
+def create_app(
+    db_path: str, collection_name: Optional[str] = None, model: Optional[str] = None
+):
     """Create and configure the Flask app."""
     # Initialize conversation engine
-    if not init_conversation_engine(db_path, collection_name, model):
+    if not init_conversation_engine():
         raise RuntimeError("Failed to initialize conversation engine")
 
     return app
@@ -255,8 +260,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Initialize conversation engine
-    if init_conversation_engine(args.db_path, args.collection_name, args.model):
+    if init_conversation_engine():
         app.run(host=args.host, port=args.port, debug=args.debug)
     else:
         print("Failed to initialize conversation engine. Exiting.")
-        exit(1)
+        sys.exit()
