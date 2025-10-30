@@ -292,7 +292,7 @@ class OpenBisProcessor:
         logger.info("-> Vector database processing complete.")
 
     @staticmethod
-    def export_chunks(chunks: List[Document], output_dir: str):
+    def _export_chunks(chunks: List[Document], output_dir: str):
         """Exports the list of Document chunks to JSON, CSV, and JSONL files."""
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
