@@ -16,7 +16,7 @@ class OpenbisScraper:
     to Markdown, and saves it to .md files.
     """
 
-    def __init__(self, base_url, output_dir, initial_urls=None):
+    def __init__(self, base_url, output_dir, initial_urls=None, max_pages=None):
         """
         Initializes the scraper with the target URL and output directory.
 
@@ -25,11 +25,13 @@ class OpenbisScraper:
             output_dir (str): The directory where Markdown files will be saved.
             initial_urls (set, optional): A set of initial URLs to crawl.
                                           Defaults to the base_url.
+            max_pages (int, optional): A safety limit on the number of pages to scrape.
         """
         self.base_url = base_url
         self.output_dir = output_dir
         self.to_visit = initial_urls if initial_urls is not None else {base_url}
         self.visited = set()
+        self.max_pages = max_pages
 
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
@@ -39,6 +41,12 @@ class OpenbisScraper:
         Starts the crawling and scraping process.
         """
         while self.to_visit:
+            if self.max_pages is not None and len(self.visited) >= self.max_pages:
+                logger.info(
+                    f"Reached max_pages limit of {self.max_pages}. Stopping scrape."
+                )
+                break
+
             current_url = self.to_visit.pop()
             if current_url in self.visited:
                 continue

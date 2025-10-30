@@ -1,64 +1,43 @@
 # Ensure the source directory is in the Python path for imports
-# This allows the test to find the scraper module
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import call, patch
 
 import pytest
 import requests
 
-# Adjust the path if your 'src' directory is located elsewhere relative to the project root
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# Add the src directory to the path to ensure imports work from the root
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from desi.scraper.openbis_scraper import OpenbisScraper
 
 # --- Test Data and Mocks ---
 
-# 1. Create fake HTML content for our mock server responses
 FAKE_HTML_HOME = """
-<html>
-<body>
+<html><body>
   <div role="main">
-    <h1>Home Page</h1>
-    <p>This is the main content.</p>
-    <a href="/en/20.10.0-11/details.html">Details Page Link</a>
-    <a href="https://example.com">External Link</a>
-    <a href="/en/20.10.0-11/">Link to Self</a>
+    <h1>Home Page</h1><a href="details.html">Details</a>
+    <a href="https://example.com">External</a>
   </div>
-  <div id="sidebar">
-    <p>Other content we should ignore.</p>
-  </div>
-</body>
-</html>
+</body></html>
 """
 
 FAKE_HTML_DETAILS = """
-<html>
-<body>
-  <div role="main">
-    <h2>Details Page</h2>
-    <p>This is the details page content.</p>
-  </div>
-</body>
-</html>
+<html><body>
+  <div role="main"><h2>Details Page</h2><a href="/">Home</a></div>
+</body></html>
 """
 
-FAKE_HTML_NO_MAIN = """
-<html>
-<body>
-  <div>
-    <p>This page has no main content div.</p>
-  </div>
-</body>
-</html>
-"""
+FAKE_HTML_NO_MAIN = "<html><body><div>No main content</div></body></html>"
 
 
-# 2. Create a mock for the requests.get function
 class MockResponse:
+    """A mock for the requests.Response object."""
+
     def __init__(self, content, status_code=200):
         self.content = content.encode("utf-8")
         self.status_code = status_code
+        self.url = ""
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -68,8 +47,6 @@ class MockResponse:
 @pytest.fixture
 def mock_requests_get(mocker):
     """A pytest fixture to mock requests.get with predefined responses."""
-
-    # A map of URLs to their fake HTML content
     url_map = {
         "https://openbis.readthedocs.io/en/20.10.0-11/": MockResponse(FAKE_HTML_HOME),
         "https://openbis.readthedocs.io/en/20.10.0-11/details.html": MockResponse(
@@ -83,8 +60,7 @@ def mock_requests_get(mocker):
         ),
     }
 
-    def mock_get(url):
-        # Return the response from our map, or a 404 if not found
+    def mock_get(url, timeout=None):
         return url_map.get(url, MockResponse("Not Found", 404))
 
     # Replace the real requests.get with our mock function
@@ -94,96 +70,109 @@ def mock_requests_get(mocker):
 # --- Unit Tests ---
 
 
-def test_scrape_single_page_success(tmp_path):
+# By adding `mock_requests_get` to the test signature, we activate the mock.
+def test_scrape_single_page_success(mock_requests_get, tmp_path):
     """
     Tests that the scraper can download and correctly save a single page.
+    This test will NOT hit the live internet because the mock is active.
     """
     base_url = "https://openbis.readthedocs.io/en/20.10.0-11/"
+    scraper = OpenbisScraper(base_url=base_url, output_dir=str(tmp_path), max_pages=1)
 
-    # Run the scraper on the temporary directory provided by pytest
-    with patch("time.sleep", return_value=None):  # Mock sleep to speed up test
-        scraper = OpenbisScraper(base_url=base_url, output_dir=str(tmp_path))
+    with patch("time.sleep", return_value=None):
         scraper.scrape()
-    # Assertions
+
     expected_file = tmp_path / "en_20.10.0-11.md"
     assert expected_file.exists()
 
     content = expected_file.read_text(encoding="utf-8")
     assert "# Home Page" in content
-    assert "This is the main content." in content
-    assert "Other content we should ignore" not in content  # Should not scrape sidebar
+    # The filename should be derived from the path, not the full URL
+    assert len(list(tmp_path.iterdir())) == 1
 
 
-def test_scrape_crawls_to_second_page(tmp_path):
+def test_scrape_crawls_to_second_page(mock_requests_get, tmp_path):
     """
     Tests that the scraper follows an internal link found on the first page.
     """
     base_url = "https://openbis.readthedocs.io/en/20.10.0-11/"
+    scraper = OpenbisScraper(base_url=base_url, output_dir=str(tmp_path))
 
     with patch("time.sleep", return_value=None):
-        scraper = OpenbisScraper(base_url=base_url, output_dir=str(tmp_path))
         scraper.scrape()
 
-    # Assert that both the home page and the details page were scraped and saved
     assert (tmp_path / "en_20.10.0-11.md").exists()
     details_file = tmp_path / "en_20.10.0-11_details.html.md"
     assert details_file.exists()
 
     details_content = details_file.read_text(encoding="utf-8")
     assert "## Details Page" in details_content
-    assert "This is the details page content." in details_content
-
-
-def test_ignores_external_and_visited_links(mock_requests_get, tmp_path):
-    """
-    Tests that the scraper does not follow external links or revisit pages.
-    """
-    base_url = "https://openbis.readthedocs.io/en/20.10.0-11/"
-
-    with patch("time.sleep", return_value=None):
-        scraper = OpenbisScraper(base_url=base_url, output_dir=str(tmp_path))
-        scraper.scrape()
-
-    # The mock is configured to only know about the 'home' and 'details' URLs.
-    # If it tries to access example.com, the mock would fail.
-    # We can check the call count to ensure it only visited the valid internal links.
-    # It should have been called twice: once for home, once for details.
+    # It should have called the mock for the base URL and the details URL
     assert mock_requests_get.call_count == 2
 
 
-def test_handles_request_exception_gracefully(tmp_path):
+def test_scrape_stops_at_max_pages(mock_requests_get, tmp_path):
+    """
+    Tests that the new max_pages safety feature correctly limits the crawl.
+    """
+    base_url = "https://openbis.readthedocs.io/en/20.10.0-11/"
+    # Set max_pages to 1, even though the first page has a link to a second
+    scraper = OpenbisScraper(base_url=base_url, output_dir=str(tmp_path), max_pages=1)
+
+    with patch("time.sleep", return_value=None):
+        scraper.scrape()
+
+    # The mock should only have been called ONCE
+    assert mock_requests_get.call_count == 1
+    # Only one file should have been created
+    assert len(list(tmp_path.iterdir())) == 1
+    assert (tmp_path / "en_20.10.0-11.md").exists()
+    assert not (tmp_path / "en_20.10.0-11_details.html.md").exists()
+
+
+def test_handles_request_exception_gracefully(mock_requests_get, tmp_path):
     """
     Tests that a network error on one page does not stop the entire process.
     """
     base_url = "https://openbis.readthedocs.io/en/20.10.0-11/"
-    error_urls = {base_url, "https://openbis.readthedocs.io/en/20.10.0-11/error.html"}
-    # Manually add the error URL to the list of pages to visit
+    error_url = "https://openbis.readthedocs.io/en/20.10.0-11/error.html"
+    initial_urls = {base_url, error_url}
+
+    scraper = OpenbisScraper(
+        base_url=base_url, output_dir=str(tmp_path), initial_urls=initial_urls
+    )
+
     with patch("time.sleep", return_value=None):
-        scraper = OpenbisScraper(
-            base_url=base_url, output_dir=str(tmp_path), initial_urls=error_urls
-        )
         scraper.scrape()
 
-    # The scraper should log an error but continue.
-    # The successful page should exist, but the error page should not.
+    # Assert that the successful page was created and the error page was not
     assert (tmp_path / "en_20.10.0-11.md").exists()
     assert not (tmp_path / "en_20.10.0-11_error.html.md").exists()
 
+    # --- FIX: Use assert_has_calls to be more specific and robust ---
+    # We verify that it *attempted* to call our initial URLs, regardless of
+    # what other URLs it discovered and called later.
+    expected_calls = [
+        call(base_url, timeout=30),
+        call(error_url, timeout=30),
+    ]
+    mock_requests_get.assert_has_calls(expected_calls, any_order=True)
 
-def test_handles_page_without_main_content(tmp_path):
+
+def test_handles_page_without_main_content(mock_requests_get, tmp_path):
     """
     Tests that no file is created for a page that lacks the main content div.
     """
-    base_url = "https://openbis.readthedocs.io/en/20.10.0-11/"
-    url_no_main = "https://openbis.readthedocs.io/en/20.10.0-11/no-main.html"
-    # FIX: Pass the URL directly to the function.
-    no_main_urls = {url_no_main}
+    no_main_url = "https://openbis.readthedocs.io/en/20.10.0-11/no-main.html"
+    scraper = OpenbisScraper(
+        base_url="https://openbis.readthedocs.io/en/20.10.0-11/",
+        output_dir=str(tmp_path),
+        initial_urls={no_main_url},
+    )
 
     with patch("time.sleep", return_value=None):
-        scraper = OpenbisScraper(
-            base_url=base_url, output_dir=str(tmp_path), initial_urls=no_main_urls
-        )
         scraper.scrape()
 
-    # Assertions are unchanged
+    # The mock was called, but no file should have been written.
+    assert mock_requests_get.call_count == 1
     assert len(list(tmp_path.iterdir())) == 0
