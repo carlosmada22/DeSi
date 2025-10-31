@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-Web interface for DeSi using Flask.
+Web interface for DeSi using FastAPI and Gradio.
 
-This module provides a simple web interface for interacting with DeSi
-through a browser-based chat interface.
+This module provides a modern web interface for interacting with DeSi
+through a browser-based chat interface powered by Gradio, with a FastAPI
+backend for robust API handling.
 """
 
-import json
 import logging
-import sys
-from datetime import datetime
+import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
 
-from flask import Flask, jsonify, render_template, request, session
-from flask_cors import CORS
+import gradio as gr
+import requests
+from fastapi import FastAPI, HTTPException
 from langchain_community.chat_models import ChatOllama
+from pydantic import BaseModel
 
 from ..query.conversation_engine import ChatbotEngine, SqliteConversationMemory
 from ..query.query import RAGQueryEngine
@@ -24,244 +26,504 @@ from ..utils.config import DesiConfig
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Create Flask app
-app = Flask(__name__)
-
-# Load configuration
-config = DesiConfig()
-app.secret_key = config.secret_key
-
-# Configure CORS
-if config.cors_origins == "*":
-    CORS(app)
-else:
-    CORS(app, origins=config.cors_origins.split(","))
-
-# Global conversation engine
-conversation_engine = None
+# Global conversation engine - initialized once on startup
+conversation_engine: Optional[ChatbotEngine] = None
+config: Optional[DesiConfig] = None
+api_base_url: str = "http://127.0.0.1:7860"  # Default, will be updated on startup
 
 
-def init_conversation_engine():
-    """Initializes and returns the main ChatbotEngine."""
+# Pydantic models for API
+class ChatRequest(BaseModel):
+    """Request model for chat endpoint."""
+
+    message: str
+    session_id: Optional[str] = None
+
+
+class ChatResponse(BaseModel):
+    """Response model for chat endpoint."""
+
+    response: str
+    session_id: str
+    sources: List[dict]
+
+
+class ClearSessionRequest(BaseModel):
+    """Request model for clearing session."""
+
+    session_id: str
+
+
+def init_conversation_engine() -> ChatbotEngine:
+    """
+    Initialize the conversation engine on application startup.
+    This is called only once when the FastAPI server starts.
+    """
+    global config
     config = DesiConfig()
 
-    # 1. Build the prerequisite objects
-    rag_engine = RAGQueryEngine(
-        chroma_persist_directory=config.db_path,
-        prompt_template_path="./prompts/desi_query_prompt.md",  # Assuming a default path
-        llm_model=config.model_name,
-    )
+    logger.info("🚀 Initializing DeSi Conversation Engine...")
 
-    memory = SqliteConversationMemory(
-        db_path=config.memory_db_path, history_limit=config.history_limit
-    )
+    try:
+        # Get project root directory
+        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        db_path = str(project_root / config.db_path)
+        memory_db_path = str(project_root / config.memory_db_path)
+        prompt_template_path = str(project_root / "prompts" / "desi_query_prompt.md")
 
-    rewrite_llm = ChatOllama(model=config.model_name)
+        logger.info(f"Database path: {db_path}")
+        logger.info(f"Memory database path: {memory_db_path}")
+        logger.info(f"Prompt template path: {prompt_template_path}")
 
-    # 2. Now, create the ChatbotEngine with the objects it expects
+        # Initialize RAG engine
+        logger.info("Initializing RAG engine...")
+        rag_engine = RAGQueryEngine(
+            chroma_persist_directory=db_path,
+            prompt_template_path=prompt_template_path,
+            embedding_model=config.embedding_model_name,
+            llm_model=config.model_name,
+        )
+
+        # Initialize conversation memory
+        logger.info("Initializing conversation memory...")
+        memory = SqliteConversationMemory(
+            db_path=memory_db_path,
+            history_limit=config.history_limit,
+        )
+
+        # Initialize rewrite LLM
+        logger.info("Initializing rewrite LLM...")
+        rewrite_llm = ChatOllama(model=config.model_name)
+
+        # Create the chatbot engine
+        logger.info("Creating chatbot engine...")
+        engine = ChatbotEngine(
+            rag_engine=rag_engine,
+            memory=memory,
+            rewrite_llm=rewrite_llm,
+        )
+
+        logger.info("✅ Chatbot Engine initialized successfully!")
+        return engine
+
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize conversation engine: {e}", exc_info=True)
+        raise RuntimeError(f"Failed to initialize conversation engine: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for FastAPI.
+    Initializes the conversation engine on startup.
+    """
     global conversation_engine
-    conversation_engine = ChatbotEngine(
-        rag_engine=rag_engine, memory=memory, rewrite_llm=rewrite_llm
-    )
-    print("✅ Chatbot Engine initialized successfully.")
+
+    # Startup
+    logger.info("Starting up FastAPI application...")
+    try:
+        conversation_engine = init_conversation_engine()
+        yield
+    except Exception as e:
+        logger.error(f"Failed to start application: {e}")
+        raise
+    finally:
+        # Shutdown
+        logger.info("Shutting down FastAPI application...")
 
 
-@app.route("/")
-def index():
-    """Main chat interface."""
-    return render_template("index.html")
+# Create FastAPI app with lifespan
+app = FastAPI(
+    title="DeSi - DataStore Helper",
+    description="RAG-focused chatbot for openBIS and DataStore documentation",
+    version="2.0.0",
+    lifespan=lifespan,
+)
 
 
-@app.route("/api/chat", methods=["POST"])
-def chat():
-    """Handle chat messages."""
-    if not conversation_engine:
-        return jsonify(
-            {
-                "error": "Conversation engine not initialized",
-                "response": "Sorry, the system is not ready. Please check the server logs.",
-            }
-        ), 500
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    if conversation_engine is None:
+        raise HTTPException(
+            status_code=503, detail="Conversation engine not initialized"
+        )
+    return {"status": "healthy", "engine": "ready"}
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_endpoint(request: ChatRequest):
+    """
+    Main chat endpoint for processing user messages.
+
+    Args:
+        request: ChatRequest containing the user message and optional session_id
+
+    Returns:
+        ChatResponse with the bot's response, session_id, and sources
+    """
+    if conversation_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Conversation engine not initialized",
+        )
 
     try:
-        data = request.get_json()
-        user_message = data.get("message", "").strip()
-
+        user_message = request.message.strip()
         if not user_message:
-            return jsonify({"error": "Empty message"}), 400
+            raise HTTPException(status_code=400, detail="Empty message")
 
-        # Get or create session ID
-        session_id = session.get("session_id")
+        # Generate session ID if not provided
+        session_id = request.session_id or str(uuid.uuid4())
 
-        # Process the message
-        response, session_id, metadata = conversation_engine.chat(
-            user_message, session_id
+        logger.info(
+            f"Processing message for session {session_id}: {user_message[:50]}..."
         )
 
-        # Store session ID
-        session["session_id"] = session_id
+        # Process the message through the conversation engine
+        response, sources = conversation_engine.chat(user_message, session_id)
 
-        return jsonify(
-            {"response": response, "session_id": session_id, "metadata": metadata}
-        )
-
-    except Exception as e:
-        logger.error(f"Error processing chat message: {e}")
-        return jsonify(
+        # Format sources for response
+        formatted_sources = [
             {
-                "error": "Internal server error",
-                "response": f"Sorry, I encountered an error: {str(e)}",
+                "source": doc.get("source", "N/A"),
+                "origin": doc.get("origin", "N/A"),
             }
-        ), 500
+            for doc in sources
+        ]
 
-
-@app.route("/api/history")
-def get_history():
-    """Get conversation history for the current session."""
-    if not conversation_engine:
-        return jsonify({"error": "Conversation engine not initialized"}), 500
-
-    try:
-        session_id = session.get("session_id")
-        if not session_id:
-            return jsonify({"history": []})
-
-        history = conversation_engine.get_conversation_history(session_id)
-        return jsonify({"history": history})
+        return ChatResponse(
+            response=response,
+            session_id=session_id,
+            sources=formatted_sources,
+        )
 
     except Exception as e:
-        logger.error(f"Error getting conversation history: {e}")
-        return jsonify({"error": "Failed to get conversation history"}), 500
+        logger.error(f"Error processing chat message: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing message: {str(e)}",
+        )
 
 
-@app.route("/api/stats")
-def get_stats():
-    """Get database statistics."""
-    if not conversation_engine:
-        return jsonify({"error": "Conversation engine not initialized"}), 500
+@app.post("/api/clear-session")
+async def clear_session_endpoint(request: ClearSessionRequest):
+    """
+    Clear conversation memory for a specific session.
+
+    Args:
+        request: ClearSessionRequest containing the session_id
+
+    Returns:
+        Success message
+    """
+    if conversation_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Conversation engine not initialized",
+        )
 
     try:
-        stats = conversation_engine.get_database_stats()
-        return jsonify(stats)
+        conversation_engine.memory.clear_session(request.session_id)
+        logger.info(f"Cleared session: {request.session_id}")
+        return {
+            "message": "Session cleared successfully",
+            "session_id": request.session_id,
+        }
 
     except Exception as e:
-        logger.error(f"Error getting database stats: {e}")
-        return jsonify({"error": "Failed to get database stats"}), 500
+        logger.error(f"Error clearing session: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error clearing session: {str(e)}",
+        )
 
 
-@app.route("/api/new-session", methods=["POST"])
-def new_session():
-    """Start a new conversation session."""
+# ============================================================================
+# Gradio Interface
+# ============================================================================
+
+
+def format_sources_display(sources: List[dict]) -> str:
+    """
+    Format sources for display in the Gradio interface.
+
+    Args:
+        sources: List of source dictionaries
+
+    Returns:
+        Formatted string for display
+    """
+    if not sources:
+        return "\n\n📚 **Sources:** No sources were used for this response."
+
+    # Remove duplicates based on source URL
+    unique_sources = {}
+    for source in sources:
+        source_url = source.get("source", "N/A")
+        if source_url not in unique_sources:
+            unique_sources[source_url] = source
+
+    # Format for display
+    sources_text = "\n\n📚 **Sources:**\n"
+    for source in unique_sources.values():
+        origin = source.get("origin", "N/A")
+        source_url = source.get("source", "N/A")
+
+        # Make origin name more friendly
+        if origin == "dswiki":
+            display_origin = "DataStore Wiki"
+        elif origin == "openbis":
+            display_origin = "openBIS Wiki"
+        else:
+            display_origin = origin.title()
+
+        sources_text += f"- **{display_origin}**: {source_url}\n"
+
+    return sources_text
+
+
+def chat_with_desi(
+    message: str,
+    history: List[Tuple[str, str]],
+    session_id: str,
+) -> Tuple[List[Tuple[str, str]], str]:
+    """
+    Gradio chat function that communicates with the FastAPI backend.
+
+    Args:
+        message: User's input message
+        history: Current chat history (list of [user_msg, bot_msg] pairs)
+        session_id: Current session ID
+
+    Returns:
+        Tuple of (updated_history, session_id)
+    """
+    if not message or not message.strip():
+        return history, session_id
+
     try:
-        # Clear the current session
-        session.pop("session_id", None)
+        # Make request to FastAPI backend
+        response = requests.post(
+            f"{api_base_url}/api/chat",
+            json={"message": message, "session_id": session_id},
+            timeout=120,  # 2 minute timeout for LLM processing
+        )
+        response.raise_for_status()
 
-        return jsonify({"message": "New session started"})
+        data = response.json()
+        bot_response = data["response"]
+        sources = data.get("sources", [])
+        new_session_id = data["session_id"]
+
+        # Format the bot response with sources
+        full_response = bot_response + format_sources_display(sources)
+
+        # Update history
+        history.append((message, full_response))
+
+        return history, new_session_id
+
+    except requests.exceptions.Timeout:
+        error_msg = "⏱️ Request timed out. The model might be taking too long to respond. Please try again."
+        history.append((message, error_msg))
+        return history, session_id
+
+    except requests.exceptions.RequestException as e:
+        error_msg = f"❌ Error communicating with backend: {str(e)}"
+        logger.error(f"Request error: {e}", exc_info=True)
+        history.append((message, error_msg))
+        return history, session_id
 
     except Exception as e:
-        logger.error(f"Error starting new session: {e}")
-        return jsonify({"error": "Failed to start new session"}), 500
+        error_msg = f"❌ Unexpected error: {str(e)}"
+        logger.error(f"Unexpected error in chat: {e}", exc_info=True)
+        history.append((message, error_msg))
+        return history, session_id
 
 
-@app.route("/api/session-stats")
-def get_session_stats():
-    """Get statistics for the current session."""
-    if not conversation_engine:
-        return jsonify({"error": "Conversation engine not initialized"}), 500
+def clear_conversation(session_id: str) -> Tuple[List, str, str]:
+    """
+    Clear the conversation history and start a new session.
 
+    Args:
+        session_id: Current session ID
+
+    Returns:
+        Tuple of (empty_history, new_session_id, welcome_message)
+    """
     try:
-        session_id = session.get("session_id")
-        if not session_id:
-            return jsonify(
-                {"stats": {"session_id": None, "total_messages": 0, "total_tokens": 0}}
+        # Clear the session in the backend
+        if session_id:
+            requests.post(
+                f"{api_base_url}/api/clear-session",
+                json={"session_id": session_id},
+                timeout=10,
             )
 
-        stats = conversation_engine.get_session_stats(session_id)
-        return jsonify({"stats": stats})
+        # Generate new session ID
+        new_session_id = str(uuid.uuid4())
+        logger.info(f"Started new session: {new_session_id}")
+
+        # Return empty history and welcome message
+        welcome_msg = (
+            "🔄 Conversation cleared! Starting a new session. How can I help you?"
+        )
+        return [], new_session_id, welcome_msg
 
     except Exception as e:
-        logger.error(f"Error getting session stats: {e}")
-        return jsonify({"error": "Failed to get session stats"}), 500
+        logger.error(f"Error clearing conversation: {e}", exc_info=True)
+        # Still create new session even if backend clear fails
+        new_session_id = str(uuid.uuid4())
+        return (
+            [],
+            new_session_id,
+            "⚠️ Session cleared (with warnings). How can I help you?",
+        )
 
 
-@app.route("/api/clear-session", methods=["POST"])
-def clear_session():
-    """Clear the current session's conversation memory."""
-    if not conversation_engine:
-        return jsonify({"error": "Conversation engine not initialized"}), 500
+def create_gradio_interface() -> gr.Blocks:
+    """
+    Create and configure the Gradio chat interface.
 
-    try:
-        session_id = session.get("session_id")
-        if session_id:
-            success = conversation_engine.clear_session_memory(session_id)
-            if success:
-                return jsonify({"message": "Session memory cleared successfully"})
-            else:
-                return jsonify({"error": "Failed to clear session memory"}), 500
-        else:
-            return jsonify({"message": "No active session to clear"})
+    Returns:
+        Configured Gradio Blocks interface
+    """
+    with gr.Blocks(
+        title="DeSi - DataStore Helper",
+        theme=gr.themes.Soft(),
+        css="""
+        .gradio-container {
+            max-width: 1200px !important;
+        }
+        """,
+    ) as demo:
+        # Session state
+        session_id_state = gr.State(value=str(uuid.uuid4()))
 
-    except Exception as e:
-        logger.error(f"Error clearing session: {e}")
-        return jsonify({"error": "Failed to clear session"}), 500
+        # Header
+        gr.Markdown(
+            """
+            # 🤖 DeSi - DataStore Helper
+
+            Your expert assistant for **openBIS** and **BAM DataStore** documentation.
+
+            Ask me anything about these systems, and I'll provide detailed answers based on the official documentation!
+            """
+        )
+
+        WELCOME_MESSAGE = "Hello! I'm DeSi, your assistant for openBIS and DataStore. How can I help you today?"
+
+        # Chat interface
+        chatbot = gr.Chatbot(
+            label="Chat with DeSi",
+            height=500,
+            show_label=True,
+            avatar_images=(None, "🤖"),
+            value=[(None, WELCOME_MESSAGE)],
+        )
+
+        with gr.Row():
+            msg_input = gr.Textbox(
+                label="Your message",
+                placeholder="Type your question here... (e.g., 'How do I create a new space in openBIS?')",
+                lines=2,
+                scale=4,
+                elem_id="chat-input",
+            )
+            send_btn = gr.Button(
+                "Send 📤",
+                variant="primary",
+                scale=1,
+                elem_id="chat-send-btn",
+            )
+
+        with gr.Row():
+            clear_btn = gr.Button("🔄 Clear Conversation", variant="secondary")
+
+        # Status message
+        status_msg = gr.Textbox(
+            label="Status",
+            value="Ready! Ask me anything about openBIS or DataStore.",
+            interactive=False,
+            show_label=False,
+        )
+
+        # Session info (hidden but useful for debugging)
+        with gr.Accordion("Session Info", open=False):
+            gr.Textbox(
+                label="Session ID",
+                value=lambda: session_id_state.value,
+                interactive=False,
+            )
+
+        # Event handlers
+        def submit_message(message, history, session_id):
+            """Handle message submission."""
+            new_history, new_session_id = chat_with_desi(message, history, session_id)
+            return "", new_history, new_session_id
+
+        # Send button click
+        send_btn.click(
+            fn=submit_message,
+            inputs=[msg_input, chatbot, session_id_state],
+            outputs=[msg_input, chatbot, session_id_state],
+        )
+
+        # Enter key press
+        msg_input.submit(
+            fn=submit_message,
+            inputs=[msg_input, chatbot, session_id_state],
+            outputs=[msg_input, chatbot, session_id_state],
+        )
+
+        # Clear button
+        clear_btn.click(
+            fn=clear_conversation,
+            inputs=[session_id_state],
+            outputs=[chatbot, session_id_state, status_msg],
+        )
+
+        # Footer
+        gr.Markdown(
+            """
+            ---
+            **Note:** This assistant uses RAG (Retrieval-Augmented Generation) to provide accurate answers based on official documentation.
+            Sources are displayed below each response.
+            """
+        )
+
+    return demo
 
 
-@app.errorhandler(404)
-def not_found(error):
-    """Handle 404 errors."""
-    return jsonify({"error": "Not found"}), 404
+# Mount Gradio app to FastAPI
+gradio_app = create_gradio_interface()
+app = gr.mount_gradio_app(app, gradio_app, path="/")
 
 
-@app.errorhandler(500)
-def internal_error(error):
-    """Handle 500 errors."""
-    logger.error(f"Internal server error: {error}")
-    return jsonify({"error": "Internal server error"}), 500
-
-
-def create_app(
-    db_path: str, collection_name: Optional[str] = None, model: Optional[str] = None
-):
-    """Create and configure the Flask app."""
-    # Initialize conversation engine
-    if not init_conversation_engine():
-        raise RuntimeError("Failed to initialize conversation engine")
-
-    return app
-
+# ============================================================================
+# Main entry point for development
+# ============================================================================
 
 if __name__ == "__main__":
-    # This is for development only
-    import argparse
+    import uvicorn
 
-    parser = argparse.ArgumentParser(description="Run DeSi web interface")
-    parser.add_argument(
-        "--db-path", default=config.db_path, help="Path to ChromaDB database"
-    )
-    parser.add_argument(
-        "--collection-name",
-        default=config.collection_name,
-        help="ChromaDB collection name",
-    )
-    parser.add_argument(
-        "--model", default=config.model_name, help="Ollama model to use"
-    )
-    parser.add_argument("--host", default=config.web_host, help="Host to run on")
-    parser.add_argument(
-        "--port", type=int, default=config.web_port, help="Port to run on"
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        default=config.web_debug,
-        help="Enable debug mode",
-    )
+    # Get configuration
+    cfg = DesiConfig()
 
-    args = parser.parse_args()
+    # Set the API base URL for Gradio to communicate with FastAPI
+    api_base_url = f"http://{cfg.web_host}:{cfg.web_port}"
 
-    # Initialize conversation engine
-    if init_conversation_engine():
-        app.run(host=args.host, port=args.port, debug=args.debug)
-    else:
-        print("Failed to initialize conversation engine. Exiting.")
-        sys.exit()
+    logger.info("🚀 Starting DeSi Web Interface...")
+    logger.info(f"Host: {cfg.web_host}")
+    logger.info(f"Port: {cfg.web_port}")
+    logger.info(f"API Base URL: {api_base_url}")
+
+    # Run with uvicorn
+    uvicorn.run(
+        "desi.web.app:app",
+        host=cfg.web_host,
+        port=cfg.web_port,
+        reload=cfg.web_debug,
+        log_level="info",
+    )

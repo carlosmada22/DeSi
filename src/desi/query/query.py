@@ -287,9 +287,9 @@ if __name__ == "__main__":
     # --- Standalone Execution Example ---
     CHROMA_PERSIST_DIRECTORY = "./desi_vectordb"
     # Value for boosting dswiki chunks
-    DSWIKI_BOOST_VALUE = 0.15
+    DSWIKI_BOOST_VALUE = 0.1
     # A score of 0.3 means we discard any chunk with less than 30% similarity.
-    RELEVANCE_THRESHOLD = 0.7
+    RELEVANCE_THRESHOLD = 0.4
     # Path to the prompt template
     PROMPT_TEMPLATE_PATH = "./prompts/desi_query_prompt.md"
 

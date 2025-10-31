@@ -8,6 +8,7 @@ within a structured, extensible LangGraph graph.
 """
 
 import logging
+import re
 import sqlite3
 import uuid
 from typing import Dict, List, Tuple, TypedDict
@@ -153,12 +154,7 @@ class ChatbotEngine:
 
         history_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])
 
-        rewrite_prompt = f"""
-Given the following conversation history and a user's follow-up question, rewrite the user's question to be a standalone question that can be understood without the context of the chat history.
-
-This standalone question will be used to search a knowledge base.
-
-If the user's question is already a good standalone question, simply return it as is.
+        rewrite_prompt = f"""Based on the chat history below, rewrite the user's follow-up question into a single, self-contained question ideal for a vector search. DO NOT add any commentary or explanation.
 
 <Conversation History>
 {history_str}
@@ -166,14 +162,20 @@ If the user's question is already a good standalone question, simply return it a
 
 User's Follow-up Question: "{user_query}"
 
-Standalone Question:
-"""
+Standalone Question:"""
 
-        rewritten_query = self.rewrite_llm.invoke(rewrite_prompt).content
+        # Get the raw output from the LLM
+        raw_output = self.rewrite_llm.invoke(rewrite_prompt)
+
+        # Clean the output to remove any "thought" blocks
+        cleaned_query = re.sub(
+            r"<think>.*?</think>", "", str(raw_output.content), flags=re.DOTALL
+        ).strip()
+
         logger.info(
-            f"Original query: '{user_query}' -> Rewritten query: '{rewritten_query}'"
+            f"Original query: '{user_query}' -> Rewritten query: '{cleaned_query}'"
         )
-        return {"rewritten_query": rewritten_query}
+        return {"rewritten_query": cleaned_query}
 
     # --- Node Definitions for the Graph ---
 
@@ -325,9 +327,9 @@ if __name__ == "__main__":
     SQLITE_DB_PATH = "./data/conversation_memory.db"
     CONVERSATION_HISTORY_LIMIT = 20
     # Value for boosting dswiki chunks
-    DSWIKI_BOOST_VALUE = 0.2
+    DSWIKI_BOOST_VALUE = 0.1
     # A score of 0.7 means we discard any chunk with less than 70% similarity.
-    RELEVANCE_THRESHOLD = 0.7
+    RELEVANCE_THRESHOLD = 0.4
     # The model used by your RAG engine
     LLM_MODEL = "qwen3"
 
