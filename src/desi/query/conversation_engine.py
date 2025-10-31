@@ -165,11 +165,11 @@ User's Follow-up Question: "{user_query}"
 Standalone Question:"""
 
         # Get the raw output from the LLM
-        raw_rewritten_query = self.rewrite_llm.invoke(rewrite_prompt).content
+        raw_output = self.rewrite_llm.invoke(rewrite_prompt)
 
         # Clean the output to remove any "thought" blocks
         cleaned_query = re.sub(
-            r"<think>.*?</think>", "", raw_rewritten_query, flags=re.DOTALL
+            r"<think>.*?</think>", "", str(raw_output.content), flags=re.DOTALL
         ).strip()
 
         logger.info(

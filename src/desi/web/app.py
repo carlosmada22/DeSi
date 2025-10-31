@@ -420,7 +420,7 @@ def create_gradio_interface() -> gr.Blocks:
             height=500,
             show_label=True,
             avatar_images=(None, "🤖"),
-            value=[[None, WELCOME_MESSAGE]],
+            value=[[None, {"role": "assistant", "content": WELCOME_MESSAGE}]],
         )
 
         with gr.Row():
