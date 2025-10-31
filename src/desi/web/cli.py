@@ -1,75 +1,94 @@
 #!/usr/bin/env python3
 """
-Command-line interface for the DeSi web interface.
+CLI launcher for DeSi web interface.
+
+This module provides a command-line interface to launch the DeSi web server
+using uvicorn with FastAPI and Gradio.
 """
 
 import argparse
 import logging
 import sys
 
-from .app import create_app
+from ..utils.config import DesiConfig
+from ..utils.logging import setup_logging
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 logger = logging.getLogger(__name__)
 
 
-def parse_args(args=None):
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Run DeSi web interface.")
-    parser.add_argument("--db-path", default="desi_vectordb", help="Path to the ChromaDB database directory")
-    parser.add_argument("--collection-name", default="desi_docs", help="Name of the ChromaDB collection")
-    parser.add_argument("--model", default="gpt-oss:20b", help="The Ollama model to use for chat")
-    parser.add_argument("--host", default="127.0.0.1", help="The host to run the web interface on")
-    parser.add_argument("--port", type=int, default=5000, help="The port to run the web interface on")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+def main():
+    """Main entry point for the web interface CLI."""
+    parser = argparse.ArgumentParser(
+        description="Launch DeSi web interface with FastAPI and Gradio"
+    )
+    parser.add_argument(
+        "--host",
+        default=None,
+        help="Host to bind to (default: from config or 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port to bind to (default: from config or 7860)",
+    )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable auto-reload for development",
+    )
+    parser.add_argument(
+        "--config",
+        help="Path to configuration file (.env)",
+    )
 
-    return parser.parse_args(args)
+    args = parser.parse_args()
 
+    # Setup logging
+    setup_logging()
 
-def run_with_args(args):
-    """Run the web interface with the given arguments."""
-    # Set logging level
-    if args.verbose:
-        logger.setLevel(logging.DEBUG)
+    # Load configuration
+    config = DesiConfig(args.config)
+
+    # Use command-line args or fall back to config
+    host = args.host or config.web_host
+    port = args.port or config.web_port
+    reload = args.reload or config.web_debug
+
+    logger.info("=" * 60)
+    logger.info("🚀 Starting DeSi Web Interface")
+    logger.info("=" * 60)
+    logger.info(f"Host: {host}")
+    logger.info(f"Port: {port}")
+    logger.info(f"Reload: {reload}")
+    logger.info("=" * 60)
 
     try:
-        # Create the Flask app
-        app = create_app(
-            db_path=args.db_path,
-            collection_name=args.collection_name,
-            model=args.model
+        import uvicorn
+
+        # Update the global API base URL in the app module
+        import desi.web.app as app_module
+
+        app_module.api_base_url = f"http://{host}:{port}"
+
+        # Run the server
+        uvicorn.run(
+            "desi.web.app:app",
+            host=host,
+            port=port,
+            reload=reload,
+            log_level="info",
         )
 
-        logger.info(f"Starting DeSi web interface on {args.host}:{args.port}")
-        logger.info(f"Using database: {args.db_path}")
-        logger.info(f"Using collection: {args.collection_name}")
-        logger.info(f"Using model: {args.model}")
-
-        # Run the Flask app
-        app.run(
-            host=args.host,
-            port=args.port,
-            debug=args.debug
-        )
-
-        return 0
-
+    except ImportError as e:
+        logger.error(f"Failed to import required packages: {e}")
+        logger.error("Please install required packages: pip install fastapi uvicorn gradio")
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"Error starting web interface: {e}")
-        return 1
-
-
-def main():
-    """Main entry point for the script."""
-    args = parse_args()
-    return run_with_args(args)
+        logger.error(f"Failed to start web server: {e}", exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
+

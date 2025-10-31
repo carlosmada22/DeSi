@@ -38,8 +38,9 @@ dependencies = [
     "PyYAML",
     "requests",
     "scikit-learn",
-    "flask",
-    "flask-cors",
+    "fastapi",
+    "uvicorn[standard]",
+    "gradio",
     "chromadb",
 ]
 

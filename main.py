@@ -154,9 +154,41 @@ def run_query_interface(config: DesiConfig) -> None:
 
 
 def run_web_interface(config: DesiConfig) -> None:
-    """Run the web interface (placeholder - not implemented yet)."""
-    logger.info("🌐 Web interface not implemented yet, starting CLI interface...")
-    run_query_interface(config)
+    """Run the web interface using FastAPI and Gradio."""
+    logger.info("🌐 Starting web interface...")
+    try:
+        import uvicorn
+
+        # Update the global API base URL in the app module
+        import desi.web.app as app_module
+
+        app_module.api_base_url = f"http://{config.web_host}:{config.web_port}"
+
+        logger.info(
+            f"Web interface will be available at: http://{config.web_host}:{config.web_port}"
+        )
+        logger.info("Press Ctrl+C to stop the server")
+
+        # Run the server
+        uvicorn.run(
+            "desi.web.app:app",
+            host=config.web_host,
+            port=config.web_port,
+            reload=config.web_debug,
+            log_level="info",
+        )
+
+    except ImportError as e:
+        logger.error(f"Failed to import required packages: {e}")
+        logger.error(
+            "Please install required packages: pip install fastapi uvicorn gradio"
+        )
+        logger.info("Falling back to CLI interface...")
+        run_query_interface(config)
+    except Exception as e:
+        logger.error(f"Failed to start web interface: {e}")
+        logger.info("Falling back to CLI interface...")
+        run_query_interface(config)
 
 
 def main():
@@ -242,8 +274,7 @@ def main():
 
     # Step 4: Start the interface
     if args.web:
-        logger.info("🌐 Web interface not implemented yet, starting CLI interface...")
-        run_query_interface(config)
+        run_web_interface(config)
     else:
         run_query_interface(config)
 
