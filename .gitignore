@@ -1,6 +1,9 @@
 # Data folders
 data/
 
+# Project ZIP
+DeSi.zip
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

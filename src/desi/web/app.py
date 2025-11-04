@@ -16,6 +16,7 @@ from typing import List, Optional, Tuple
 import gradio as gr
 import requests
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from langchain_community.chat_models import ChatOllama
 from pydantic import BaseModel
 
@@ -138,6 +139,14 @@ app = FastAPI(
     description="RAG-focused chatbot for openBIS and DataStore documentation",
     version="2.0.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://wwwtest.datastore.bam.de/en/"],  # or ["*"] for testing
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
