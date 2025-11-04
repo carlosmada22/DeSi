@@ -1,0 +1,207 @@
+<!-- Markdown library for rendering bot responses -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+<script>
+// DeSi (DataStore Helper) Widget JavaScript
+(function() {
+  'use strict';
+  
+  // Configuration - UPDATE THIS URL to match the DeSi backend!
+  const CHATBOT_API_URL = 'https://desi.datastore.bam.de/api/chat'; // CHANGE THIS TO THE REAL DESI URL (something like https://desi.datastore.bam.de/api/chat)
+  
+  // Wait for page to be ready (Wiki.js specific)
+  if (typeof window.boot !== 'undefined') {
+    window.boot.register('page-ready', initializeChatbot);
+  } else {
+    // Fallback for non-Wiki.js environments
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initializeChatbot);
+    } else {
+      initializeChatbot();
+    }
+  }
+  
+  function initializeChatbot() {
+    // Get DOM elements
+    const chatButton = document.getElementById('desi-chat-button');
+    const chatWindow = document.getElementById('desi-chat-window');
+    const chatClose = document.getElementById('desi-chat-close');
+    const chatInput = document.getElementById('desi-chat-input');
+    const chatSend = document.getElementById('desi-chat-send');
+    const chatMessages = document.getElementById('desi-chat-messages');
+    
+    if (!chatButton || !chatWindow) {
+      console.error('DeSi: Required elements not found');
+      return;
+    }
+    
+    // Session management
+    let sessionId = localStorage.getItem('desi-chat-session-id') || null;
+    let isLoading = false;
+    
+    // Toggle chat window
+    function toggleChat() {
+      chatWindow.classList.toggle('open');
+      if (chatWindow.classList.contains('open')) {
+        chatInput.focus();
+      }
+    }
+    
+    // Close chat window
+    function closeChat() {
+      chatWindow.classList.remove('open');
+    }
+    
+    // Add message to chat
+    function addMessage(content, isUser = false, isLoading = false) {
+      const messageDiv = document.createElement('div');
+      messageDiv.className = `desi-message ${isUser ? 'user' : isLoading ? 'loading' : 'assistant'}`;
+      
+      if (isLoading) {
+        messageDiv.innerHTML = '<div class="markdown-content"><p>...</p></div>';
+        messageDiv.id = 'desi-loading-message';
+      } else {
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'markdown-content';
+        if (isUser) {
+          contentDiv.textContent = content;
+        } else {
+        // Render markdown for assistant messages
+          try {
+          contentDiv.innerHTML = marked.parse(content);
+          } catch (e) {
+          console.warn('Markdown parsing failed, using plain text:', e);
+          contentDiv.textContent = content;
+          }
+        }
+        messageDiv.appendChild(contentDiv);
+      }
+
+      chatMessages.appendChild(messageDiv);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+      return messageDiv;
+    }
+    
+    // Remove loading message
+    function removeLoadingMessage() {
+      const loadingMsg = document.getElementById('desi-loading-message');
+      if (loadingMsg) {
+        loadingMsg.remove();
+      }
+    }
+    
+    // Send message to chatbot
+    async function sendMessage(message) {
+      if (isLoading || !message.trim()) return;
+      
+      isLoading = true;
+      chatSend.disabled = true;
+      chatInput.disabled = true;
+      
+      // Add user message
+      addMessage(message, true);
+      
+      // Add loading indicator
+      addMessage('', false, true);
+      
+      // Clear input
+      chatInput.value = '';
+      
+      try {
+        const response = await fetch(CHATBOT_API_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            message: message,
+            session_id: sessionId || null
+          })
+        });
+
+        // Remove loading message
+        removeLoadingMessage();
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || `HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        
+        if (data.session_id) {
+          sessionId = data.session_id;
+          localStorage.setItem('desi-chat-session-id', sessionId);
+        }
+
+        let fullResponse = data.response;
+        
+        // Format and append sources, similar to format_sources_display in app.py
+        if (data.sources && data.sources.length > 0) {
+            const uniqueSources = {};
+            data.sources.forEach(source => {
+                if (source.source && source.source !== "N/A") {
+                    uniqueSources[source.source] = source;
+                }
+            });
+
+            if (Object.keys(uniqueSources).length > 0) {
+                fullResponse += "\n\n**Sources:**\n";
+                Object.values(uniqueSources).forEach(source => {
+                    fullResponse += `- [${source.origin || 'Source'}](${source.source})\n`;
+                });
+            }
+        }
+        
+        addMessage(fullResponse, false);
+        
+      } catch (error) {
+        console.error('DeSi error:', error);
+        removeLoadingMessage();
+        let msg = 'Sorry, I cannot connect to my servers right now. ';
+        msg += error.message ? `Error: ${error.message}` : '';
+        addMessage(msg, false);
+      } finally {
+        isLoading = false;
+        chatSend.disabled = false;
+        chatInput.disabled = false;
+        chatInput.focus();
+      }
+    }
+    
+    // Event listeners
+    chatButton.addEventListener('click', toggleChat);
+    chatClose.addEventListener('click', closeChat);
+    
+    chatSend.addEventListener('click', () => {
+      sendMessage(chatInput.value);
+    });
+    
+    chatInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage(chatInput.value);
+      }
+    });
+    
+    // Close chat when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!chatWindow.contains(e.target) && !chatButton.contains(e.target) && chatWindow.classList.contains('open')) {
+        closeChat();
+      }
+    });
+    
+    console.log('DeSi widget initialized successfully');
+  }
+
+  // Wiki.js page-ready hook or fallback
+  if (typeof window.boot !== 'undefined') {
+    window.boot.register('page-ready', initializeChatbot);
+  } else if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeChatbot);
+  } else {
+    initializeChatbot();
+  }
+})();
+</script>

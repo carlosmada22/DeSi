@@ -507,7 +507,7 @@ def create_gradio_interface() -> gr.Blocks:
 
 # Mount Gradio app to FastAPI
 gradio_app = create_gradio_interface()
-app = gr.mount_gradio_app(app, gradio_app, path="/")
+gr.mount_gradio_app(app, gradio_app, path="/")
 
 
 # ============================================================================
