@@ -1,5 +1,9 @@
 # Data folders
-data/
+data/processed
+data/raw
+
+# Conversation history
+data/conversation_memory.db
 
 # Project ZIP
 DeSi.zip
