@@ -21,7 +21,6 @@ from ragas import evaluate
 from ragas.embeddings import LangchainEmbeddingsWrapper
 from ragas.llms import LangchainLLMWrapper
 from ragas.metrics import (
-    answer_correctness,
     answer_relevancy,
     context_precision,
     context_recall,
@@ -112,9 +111,14 @@ def main():
     logger.info(f"Embedding model: {config.embedding_model_name}")
 
     judge_llm = ChatOllama(
-        model="llama3.1:8b",
+        model="qwen2.5:7b-instruct",
         temperature=0.0,
         format="json",
+        options={
+            "num_ctx": 8192,
+            "num_predict": 768,
+            "repeat_penalty": 1.1,
+        },
     )
 
     judge_embeddings = OllamaEmbeddings(model=config.embedding_model_name)
@@ -132,7 +136,6 @@ def main():
         context_recall,
         faithfulness,
         answer_relevancy,
-        answer_correctness,
     ]
 
     # ---------
@@ -158,11 +161,28 @@ def main():
         t0 = time.time()
 
         # evaluate expects a Dataset
-        ds_one = Dataset.from_list([row])
+        def clip(s: str, n: int) -> str:
+            s = (s or "").strip()
+            return s if len(s) <= n else s[:n] + "..."
+
+        def clip_ctx(
+            ctxs: list[str], per_chunk: int = 1800, max_chunks: int = 4
+        ) -> list[str]:
+            ctxs = ctxs or []
+            ctxs = ctxs[:max_chunks]
+            return [clip(c, per_chunk) for c in ctxs]
+
+        row_eval = dict(row)
+        row_eval["response"] = clip(row_eval["response"], 2000)
+        row_eval["retrieved_contexts"] = clip_ctx(
+            row_eval["retrieved_contexts"], 1800, 4
+        )
+        ds_one = Dataset.from_list([row_eval])
 
         my_run_config = RunConfig(
-            timeout=60,  # max seconds for a metric call
-            max_workers=8,  # run 8 async calls concurrently
+            timeout=120,
+            max_workers=2,
+            max_retries=3,
         )
 
         try:
