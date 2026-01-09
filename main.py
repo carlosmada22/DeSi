@@ -66,7 +66,7 @@ def check_scraped_data(config: DesiConfig) -> bool:
 
 def run_scrapers(config: DesiConfig) -> bool:
     """Run the scrapers to collect data."""
-    logger.info("🕷️  Running scrapers...")
+    logger.info("Running scrapers...")
     try:
         openbis_scraper = OpenbisScraper(
             base_url=config.openbis_url,
@@ -82,7 +82,7 @@ def run_scrapers(config: DesiConfig) -> bool:
 
 def run_processor(config: DesiConfig) -> bool:
     """Run the processor to create embeddings and vector database."""
-    logger.info("⚙️  Running processor...")
+    logger.info("Running processor...")
     try:
         # Instantiate and run the processors directly
         dswiki_processor = DsWikiProcessor(
@@ -108,7 +108,7 @@ def run_processor(config: DesiConfig) -> bool:
 
 def run_query_interface(config: DesiConfig) -> None:
     """Run the interactive query interface."""
-    logger.info("💬 Starting interactive query interface...")
+    logger.info("Starting interactive query interface...")
     try:
         project_root = Path(__file__).parent
         db_path = str(project_root / config.db_path)
@@ -155,7 +155,7 @@ def run_query_interface(config: DesiConfig) -> None:
 
 def run_web_interface(config: DesiConfig) -> None:
     """Run the web interface using FastAPI and Gradio."""
-    logger.info("🌐 Starting web interface...")
+    logger.info("Starting web interface...")
     try:
         import uvicorn
 
@@ -226,17 +226,17 @@ def main():
     # Load configuration
     config = DesiConfig(args.config)
 
-    logger.info("🚀 Starting DeSi pipeline...")
+    logger.info("Starting DeSi pipeline...")
     logger.info(f"Configuration: {config.to_dict()}")
 
     # Step 1: Check if ChromaDB database exists
     has_chromadb = check_chromadb_exists(config)
 
     if has_chromadb and not args.force_processing and not args.force_scraping:
-        logger.info("✅ ChromaDB database already exists, starting query interface...")
+        logger.info("ChromaDB database already exists, starting query interface...")
     else:
         if not has_chromadb:
-            logger.info("📊 No ChromaDB database found, need to process data...")
+            logger.info("No ChromaDB database found, need to process data...")
 
         # Step 2: Check and run scrapers if needed
         if not args.skip_scraping:
@@ -244,33 +244,33 @@ def main():
 
             if not has_data or args.force_scraping:
                 if not has_data:
-                    logger.info("📂 No scraped data found, running scrapers...")
+                    logger.info("No scraped data found, running scrapers...")
                 else:
-                    logger.info("🔄 Force scraping requested...")
+                    logger.info("Force scraping requested...")
 
                 if not run_scrapers(config):
-                    logger.error("❌ Scraping failed!")
+                    logger.error("Scraping failed!")
                     sys.exit(1)
             else:
-                logger.info("✅ Scraped data already exists, skipping scraping")
+                logger.info("Scraped data already exists, skipping scraping")
         else:
-            logger.info("⏭️  Skipping scraping as requested")
+            logger.info("Skipping scraping as requested")
 
         # Step 3: Check and run processor if needed
         if not args.skip_processing:
             if not has_chromadb or args.force_processing:
                 if not has_chromadb:
-                    logger.info("📊 No ChromaDB database found, running processor...")
+                    logger.info("No ChromaDB database found, running processor...")
                 else:
-                    logger.info("🔄 Force processing requested...")
+                    logger.info("Force processing requested...")
 
                 if not run_processor(config):
-                    logger.error("❌ Processing failed!")
+                    logger.error("Processing failed!")
                     sys.exit(1)
             else:
-                logger.info("✅ ChromaDB database already exists, skipping processing")
+                logger.info("ChromaDB database already exists, skipping processing")
         else:
-            logger.info("⏭️  Skipping processing as requested")
+            logger.info("Skipping processing as requested")
 
     # Step 4: Start the interface
     if args.web:
