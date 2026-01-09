@@ -128,7 +128,7 @@ class DesiConfig:
     @property
     def web_host(self) -> str:
         """Web interface host."""
-        return os.getenv("DESI_WEB_HOST", "127.0.0.1")
+        return os.getenv("DESI_WEB_HOST", "0.0.0.0")
 
     @property
     def web_port(self) -> int:
