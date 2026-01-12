@@ -1,0 +1,86 @@
+site_name: DeSi
+repo_url: https://github.com/carlosmada22/DeSi
+repo_name: carlosmada22/DeSi
+theme:
+  name: material
+  palette:
+    primary: custom
+    accent: custom
+  features:
+    - navigation.path
+    - navigation.footer
+    - navigation.top
+    - content.code.copy
+  icon:
+    repo: fontawesome/brands/github
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: ["src"]
+          options:
+            show_source: false
+            docstring_style: google
+            mock_imports:
+              - chromadb
+              - fastapi
+              - gradio
+              - langchain_core
+              - langchain_community
+              - langchain_ollama
+              - langgraph
+              - langgraph.checkpoint.sqlite
+              - pydantic
+              - requests
+              - uvicorn
+markdown_extensions:
+  - toc:
+      permalink: true
+  - admonition
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed
+  - pymdownx.highlight
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - tutorials/index.md
+      - Getting Started: tutorials/getting-started.md
+      - Run Locally: tutorials/run-locally.md
+      - First Query: tutorials/first-query.md
+  - How-to Guides:
+      - howtos/index.md
+      - Configuration: howtos/configuration.md
+      - Run Scraper Only: howtos/run-scraper-only.md
+      - Run Processor Only: howtos/run-processor-only.md
+      - Run Query Only: howtos/run-query-only.md
+      - Run Web UI: howtos/run-web-ui.md
+      - Reindex Vector Store: howtos/reindex-vector-store.md
+      - Change Ollama Models: howtos/change-ollama-models.md
+      - Troubleshoot: howtos/troubleshoot.md
+  - Reference:
+      - reference/index.md
+      - Command Line: reference/command-line.md
+      - Configuration: reference/configuration.md
+      - File Layout: reference/file-layout.md
+      - API:
+          - reference/api/index.md
+          - Utils: reference/api/utils.md
+          - Scraper: reference/api/scraper.md
+          - Processor: reference/api/processor.md
+          - Query: reference/api/query.md
+          - Web: reference/api/web.md
+  - Explanations:
+      - explanations/index.md
+      - Overview: explanations/overview.md
+      - Architecture: explanations/architecture.md
+      - RAG Pipeline: explanations/rag-pipeline.md
+      - Data Sources: explanations/data-sources.md
+      - Chunking and Retrieval: explanations/chunking-and-retrieval.md
+      - Conversation Memory: explanations/conversation-memory.md
+      - Security and Privacy: explanations/security-and-privacy.md
+
+extra_css:
+  - stylesheets/extra.css
