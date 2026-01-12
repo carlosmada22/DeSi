@@ -10,8 +10,11 @@ DeSi (DataStore Helper) is a retrieval-augmented chatbot that answers questions 
 
 ## Quickstart
 Follow the step-by-step guide in [Tutorials](tutorials/index.md):
+
 1) Install dependencies (`pip install -e ".[dev]"`), ensure Ollama is running with `qwen3` and `nomic-embed-text`.
+   
 2) Run `python init.py` to create the `.env` and data folders.
+   
 3) Start the full workflow with `python main.py` or launch the web UI via `python -m desi.web.cli --reload`.
 
 ## Choose Your Path

@@ -3,6 +3,16 @@ repo_url: https://github.com/carlosmada22/DeSi
 repo_name: carlosmada22/DeSi
 theme:
   name: material
+  palette:
+    primary: custom
+    accent: custom
+  features:
+    - navigation.path
+    - navigation.footer
+    - navigation.top
+    - content.code.copy
+  icon:
+    repo: fontawesome/brands/github
 plugins:
   - search
   - mkdocstrings:
@@ -71,3 +81,6 @@ nav:
       - Chunking and Retrieval: explanations/chunking-and-retrieval.md
       - Conversation Memory: explanations/conversation-memory.md
       - Security and Privacy: explanations/security-and-privacy.md
+
+extra_css:
+  - stylesheets/extra.css
