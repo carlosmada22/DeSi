@@ -16,24 +16,17 @@ theme:
 plugins:
   - search
   - mkdocstrings:
+      default_handler: python
       handlers:
         python:
           paths: ["src"]
           options:
             show_source: false
+            show_if_no_docstring: true
+            members_order: source
             docstring_style: google
-            mock_imports:
-              - chromadb
-              - fastapi
-              - gradio
-              - langchain_core
-              - langchain_community
-              - langchain_ollama
-              - langgraph
-              - langgraph.checkpoint.sqlite
-              - pydantic
-              - requests
-              - uvicorn
+            allow_inspection: false
+
 markdown_extensions:
   - toc:
       permalink: true
